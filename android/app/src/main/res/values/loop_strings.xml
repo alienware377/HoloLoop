@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="hololoop">HoloLoop</string>
+    <string name="loop_prev">Back</string>
+    <string name="loop_pause">Pause</string>
+    <string name="loop_play">Play</string>
+    <string name="loop_next">Next</string>
+    <string name="loop_shuffle_off">Shuffle: off</string>
+    <string name="loop_shuffle_on">Shuffle: on</string>
+    <string name="loop_choose">Choose a video</string>
+    <string name="loop_close">Close</string>
+    <string name="loop_playing_tag">Playing</string>
+    <string name="loop_sleep_now">Sleep now</string>
+    <string name="loop_wake_now">Wake up</string>
+    <string name="loop_sync_now">Get new videos</string>
+    <string name="loop_pc">Your PC</string>
+    <string name="loop_pc_address">PC address (like 192.168.1.20:8787)</string>
+    <string name="loop_pin">PIN from the PC</string>
+    <string name="loop_find_pc">Find my PC</string>
+    <string name="loop_connect">Connect</string>
+    <string name="loop_look">3D look</string>
+    <string name="loop_sound_title">Sound</string>
+    <string name="loop_change_pc">Link a different PC</string>
+    <string name="loop_sound">Play sound</string>
+    <string name="loop_local_look">Use this phone\'s 3D settings (off = the PC\'s)</string>
+    <string name="loop_fill">Fill the whole screen</string>
+    <string name="loop_flip">Flip depth (if faces look pushed in)</string>
+    <string name="loop_test_pattern">Show the view-number test</string>
+    <string name="loop_sleep">Sleep</string>
+    <string name="loop_sleep_switch">Go black at night</string>
+    <string name="loop_this_phone">This phone</string>
+    <string name="loop_autostart">Start HoloLoop when the phone turns on</string>
+    <string name="loop_phone_tip">Tip: keep the phone charging through the hub, and turn on Battery protection (Settings, Battery, More battery settings) so it stops at 80-85%.</string>
+    <string name="loop_filters">Filters</string>
+</resources>

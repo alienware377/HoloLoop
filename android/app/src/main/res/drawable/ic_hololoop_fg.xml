@@ -1,0 +1,23 @@
+<!-- The Looking Glass Studio cube inside a looping arrow, kept inside the
+     adaptive-icon safe zone (the middle 66 of 108). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#46E0C8"
+        android:pathData="M54,39.6l12.1,7v14.8l-12.1,7l-12.1,-7v-14.8z" />
+    <path
+        android:fillColor="#2A9BD6"
+        android:pathData="M54,39.6l12.1,7v14.8l-12.1,7z" />
+    <path
+        android:strokeColor="#46E0C8"
+        android:strokeWidth="3.6"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000"
+        android:pathData="M66.6,32.2 A25.2,25.2 0 1,1 37.8,34.7" />
+    <path
+        android:fillColor="#46E0C8"
+        android:pathData="M43.1,32.8 L40.9,41.3 L34.3,34.2 Z" />
+</vector>

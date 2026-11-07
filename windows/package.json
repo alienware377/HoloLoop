@@ -1,0 +1,23 @@
+{
+  "name": "hololoop",
+  "productName": "HoloLoop",
+  "version": "1.0.0",
+  "description": "Kiosk hologram player for the Looking Glass Go: endless playlist, automatic 2D-to-3D conversion, sleep schedule, phone remote.",
+  "main": "src/main/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev"
+  },
+  "author": "alienware377",
+  "license": "MIT",
+  "dependencies": {
+    "ffmpeg-static": "^5.2.0",
+    "ffprobe-static": "^3.1.0",
+    "onnxruntime-node": "^1.20.1",
+    "qrcode": "^1.5.4"
+  },
+  "devDependencies": {
+    "electron": "^33.2.0",
+    "@electron/packager": "^18.3.6"
+  }
+}
