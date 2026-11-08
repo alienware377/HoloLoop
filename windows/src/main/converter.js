@@ -33,7 +33,11 @@ function ensureWorker() {
   });
 }
 
-function stopWorker() { try { worker?.kill(); } catch {} worker = null; workerReady = false; }
+// A deliberate stop: drop the exit handler first, it would log a crash and restart the lane.
+function stopWorker() {
+  const w = worker; worker = null; workerReady = false;
+  if (w) { w.removeAllListeners('exit'); try { w.kill(); } catch {} }
+}
 
 function onMessage(m) {
   if (m.type === 'ready') { workerReady = true; tick(); return; }
@@ -89,11 +93,20 @@ function onFrameMessage(m) {
   }
 }
 
+function stopFrameWorker() {
+  const w = fworker; fworker = null; fready = false;
+  if (w) { w.removeAllListeners('exit'); try { w.kill(); } catch {} }
+}
+
 function tickFrame() {
-  clearTimeout(fidle);
   if (fcurrent) return;
   const fr = needsFraming();
-  if (!fr) { if (fworker) fidle = setTimeout(() => { if (!fcurrent) { try { fworker?.kill(); } catch {} fworker = null; fready = false; } }, 60000); return; }
+  if (!fr) {
+    // close an idle worker after a minute; the regular ticks must not keep pushing that back
+    if (fworker && !fidle) fidle = setTimeout(() => { fidle = null; if (!fcurrent && !needsFraming()) stopFrameWorker(); }, 60000);
+    return;
+  }
+  clearTimeout(fidle); fidle = null;
   ensureFrameWorker();
   if (!fready) return;
   fcurrent = { id: fr.id, name: fr.name };
@@ -123,7 +136,6 @@ function cacheDir() {
 }
 
 function tick() {
-  clearTimeout(idleTimer);
   const c = config.get().convert;
   const may = c.enabled && !c.paused && allowed();
   if (current && !may) { cancel(); return; }
@@ -140,6 +152,7 @@ function tick() {
     setTimeout(tick, 50);
     return;
   }
+  clearTimeout(idleTimer); idleTimer = null;
   ensureWorker();
   if (!workerReady) return;
   current = { id: it.id, name: it.name, outFile };
@@ -152,8 +165,7 @@ function tick() {
 }
 
 function scheduleIdleStop() {
-  clearTimeout(idleTimer);
-  if (worker && !current) idleTimer = setTimeout(() => { if (!current) stopWorker(); }, 60000);  // free the GPU
+  if (worker && !current && !idleTimer) idleTimer = setTimeout(() => { idleTimer = null; if (!current) stopWorker(); }, 60000);  // free the GPU
 }
 
 function cancel() { if (current && worker) worker.postMessage({ type: 'cancel' }); }
