@@ -53,12 +53,15 @@ function fileKey(file, st) {
 
 function safeName(s) { return s.replace(/[^\w.\- ]+/g, '_').slice(0, 80); }
 
-// Per-video depth detail (model input size); none = the app-wide setting.
+// Per-video depth detail (model input size) and depth model; none = the app-wide setting.
 const QUALITY = { quick: 392, balanced: 518, fine: 700 };
+const { DEPTH_MODELS } = require('../convert/models');
 
-// A video with its own depth detail gets its own name, e.g. "clip.0123456789ab.fine_rgbd.mp4".
+// A video with its own depth detail or model gets its own name,
+// e.g. "clip.0123456789ab.fine.distillbase_rgbd.mp4".
 function cachePathFor(item, cacheDir) {
-  return path.join(cacheDir, `${safeName(path.basename(item.path, path.extname(item.path)))}.${item.key}${item.quality ? '.' + item.quality : ''}_rgbd.mp4`);
+  const own = (item.quality ? '.' + item.quality : '') + (item.model ? '.' + item.model : '');
+  return path.join(cacheDir, `${safeName(path.basename(item.path, path.extname(item.path)))}.${item.key}${own}_rgbd.mp4`);
 }
 
 function addFile(file, { fromFolder = null } = {}) {
@@ -71,7 +74,7 @@ function addFile(file, { fromFolder = null } = {}) {
   let st; try { st = fs.statSync(abs); } catch { return null; }
   if (!st.isFile() || st.size < 1024) return null;
   // a 3D copy HoloLoop made for a video that is already in the list
-  const km = path.basename(abs).match(/\.([0-9a-f]{12})(?:\.[a-z]+)?_rgbd\.(mp4|png)$/i);
+  const km = path.basename(abs).match(/\.([0-9a-f]{12})(?:\.[a-z]+){0,2}_rgbd\.(mp4|png)$/i);
   if (km && L.items.some((i) => i.key === km[1].toLowerCase())) return null;
   const item = {
     id: crypto.randomBytes(6).toString('hex'), path: abs, name: path.basename(abs, path.extname(abs)),
@@ -85,16 +88,18 @@ function addFile(file, { fromFolder = null } = {}) {
   return item;
 }
 
-// If the 3D copy for this exact file is already in the 3D folder, use it, at any detail level.
+// If the 3D copy for this exact file is already in the 3D folder, use it, at any detail level and model.
 function adoptCache(item) {
   try {
     const dir = require('./config').get().convert.cacheDir;
-    for (const quality of new Set([item.quality || null, null, ...Object.keys(QUALITY)])) {
-      const f = cachePathFor({ ...item, quality }, dir).replace(/\.mp4$/, item.still ? '.png' : '.mp4');
-      if (!fs.existsSync(f) || !fs.existsSync(f + '.json')) continue;
-      let meta = null; try { meta = JSON.parse(fs.readFileSync(f + '.json', 'utf8')); } catch {}
-      Object.assign(item, { status: 'ready', cachePath: f, progress: 1, meta, quality });
-      return true;
+    for (const model of new Set([item.model || null, null, ...Object.keys(DEPTH_MODELS)])) {
+      for (const quality of new Set([item.quality || null, null, ...Object.keys(QUALITY)])) {
+        const f = cachePathFor({ ...item, quality, model }, dir).replace(/\.mp4$/, item.still ? '.png' : '.mp4');
+        if (!fs.existsSync(f) || !fs.existsSync(f + '.json')) continue;
+        let meta = null; try { meta = JSON.parse(fs.readFileSync(f + '.json', 'utf8')); } catch {}
+        Object.assign(item, { status: 'ready', cachePath: f, progress: 1, meta, quality, model });
+        return true;
+      }
     }
   } catch {}
   return false;
@@ -170,6 +175,7 @@ function mergeMoved() {
         if (it.frame && it.frame !== 'rotatebig' && (!twin.frame || twin.frame === 'rotatebig')) twin.frame = it.frame;
         if (it.look && !twin.look) twin.look = it.look;
         if (it.quality && !twin.quality) twin.quality = it.quality;
+        if (it.model && !twin.model) twin.model = it.model;
         if (it.resumeAt && !twin.resumeAt) twin.resumeAt = it.resumeAt;
         continue;                                   // drop the stale entry
       }
@@ -190,7 +196,7 @@ function rescan() {
   const keys = new Set(L.items.map((i) => i.key));
   L.items = L.items.filter((it) => {
     if (isOurs(it.path)) return false;
-    const km = path.basename(it.path).match(/\.([0-9a-f]{12})(?:\.[a-z]+)?_rgbd\.(mp4|png)$/i);
+    const km = path.basename(it.path).match(/\.([0-9a-f]{12})(?:\.[a-z]+){0,2}_rgbd\.(mp4|png)$/i);
     return !(km && it.status === 'missing' && (keys.has(km[1].toLowerCase()) || !fs.existsSync(it.path)));
   });
   for (const it of L.items) {
@@ -249,4 +255,4 @@ function view(it, framing) {
   return { frame: 'rotate', framing: framing && framing.rotBig ? Object.assign({}, framing, { rot: framing.rotBig }) : framing };
 }
 
-module.exports = { view, load, get, save, onChange, addPaths, addFolder, removeFolder, rescan, find, patchItem, removeItem, move, reorder, playable, classify, cachePathFor, QUALITY };
+module.exports = { view, load, get, save, onChange, addPaths, addFolder, removeFolder, rescan, find, patchItem, removeItem, move, reorder, playable, classify, cachePathFor, QUALITY, DEPTH_MODELS };

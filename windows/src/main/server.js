@@ -51,7 +51,7 @@ function readBody(req) {
 function itemView(it) {
   return { id: it.id, name: it.name, kind: it.kind, still: !!it.still, status: it.status, enabled: it.enabled, progress: it.progress || 0,
     eta: it.eta ?? null, error: it.error || null, duration: it.meta?.duration || null, path: it.path, look: it.look || null, resumeAt: it.resumeAt || 0,
-    quality: it.quality || null, redo: it.redo || null,
+    quality: it.quality || null, model: it.model || null, redo: it.redo || null,
     frame: it.frame || 'rotatebig', framed: it.meta?.framing ? (it.meta.framing.failed ? 'failed' : it.meta.framing.summary?.decided) : null,
     phone: hub.phonecopy?.describe(it) || null };
 }
@@ -182,6 +182,7 @@ async function api(req, res, url) {
       else if (a === 'look') L.patchItem(body.id, { look: body.look || null });
       else if (a === 'frame') L.patchItem(body.id, { frame: ['auto', 'fit', 'turnfit', 'fill', 'rotate', 'rotatebig'].includes(body.frame) ? body.frame : 'rotatebig' });
       else if (a === 'quality') hub.converter.setQuality(body.id, body.quality);
+      else if (a === 'model') hub.converter.setModel(body.id, body.model);
       else if (a === 'retry') hub.converter.retry(body.id);
       else if (a === 'rescan') L.rescan();
       else return send(res, 400, { error: 'unknown action' });

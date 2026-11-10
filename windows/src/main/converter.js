@@ -138,7 +138,7 @@ function finish(id, outFile, meta) {
   if (!it) return;
   const old = it.cachePath;
   library.patchItem(id, { status: 'ready', cachePath: outFile, progress: 1, error: null, meta, eta: null, redo: null });
-  if (outFile !== outFileFor(it)) library.patchItem(id, { redo: true });   // detail changed while it ran
+  if (outFile !== outFileFor(it)) library.patchItem(id, { redo: true });   // detail or model changed while it ran
   if (old && old !== outFile) {
     const base = path.basename(old, path.extname(old)) + '.phone', pdir = path.join(path.dirname(old), 'Phone copies');
     let phones = []; try { phones = fs.readdirSync(pdir).filter((n) => n.startsWith(base)).map((n) => path.join(pdir, n)); } catch {}
@@ -147,12 +147,15 @@ function finish(id, outFile, meta) {
 }
 
 /** Per-video depth detail. A finished video keeps playing its old copy until the new one is made. */
-function setQuality(id, q) {
+function setQuality(id, q) { setOwn(id, { quality: library.QUALITY[q] ? q : null }); }
+
+/** Per-video depth model, the same way. */
+function setModel(id, m) { setOwn(id, { model: library.DEPTH_MODELS[m] ? m : null }); }
+
+function setOwn(id, patch) {
   const it = library.find(id);
   if (!it || (it.kind !== 'video2d' && it.kind !== 'image2d')) return;
-  q = library.QUALITY[q] ? q : null;
-  if ((it.quality || null) === q) return;
-  const patch = { quality: q };
+  if (Object.keys(patch).every((k) => (it[k] || null) === patch[k])) return;
   if (it.status === 'ready' && it.cachePath) {
     const redo = path.basename(it.cachePath) !== path.basename(outFileFor(Object.assign({}, it, patch)));   // the 3D folder may have moved
     Object.assign(patch, { redo: redo || null, error: null, progress: redo ? 0 : 1 });
@@ -207,7 +210,8 @@ function tick() {
   emit({ state: 'working', id: it.id, name: it.name, stage: 'starting', done: 0, total: 0 });
   worker.postMessage({ type: 'job', job: {
     id: it.id, src: it.path, still: !!it.still, outFile, workDir: outFile + '.work',
-    settings: { maxLong: c.maxLong, depthLong: library.QUALITY[it.quality] || c.depthLong, backend: c.backend, chunkSec: 60 },
+    settings: { maxLong: c.maxLong, depthLong: library.QUALITY[it.quality] || c.depthLong, model: library.DEPTH_MODELS[it.model] ? it.model : (library.DEPTH_MODELS[c.depthModel] ? c.depthModel : 'standard'),
+      backend: c.backend, chunkSec: 60 },
   } });
 }
 
@@ -227,4 +231,4 @@ function start(allowFn) {
   tick();
 }
 
-module.exports = { start, tick, cancel, retry, setQuality, status: () => lastStatus, onStatus: (f) => { listeners.add(f); return () => listeners.delete(f); } };
+module.exports = { start, tick, cancel, retry, setQuality, setModel, status: () => lastStatus, onStatus: (f) => { listeners.add(f); return () => listeners.delete(f); } };

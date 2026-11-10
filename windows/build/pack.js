@@ -16,6 +16,7 @@ fs.writeFileSync(path.join(root, 'build-info.json'), JSON.stringify({ stamp, ver
 const ignore = [
   /^\/tools($|\/)/, /^\/build\/pack\.js$/, /^\/dist($|\/)/, /^\/\.git($|\/)/,
   /^\/models\/dav2s_(fp32|fp16|fp16io32)\.onnx$/,                 // only the stripped *_pe models ship
+  /^\/models\/(dads|dadb)_fp32(_pe)?\.onnx$/,                       // the extra models ship as fp16 only
   /\/ffprobe-static\/bin\/(darwin|linux)($|\/)/, /\/ffprobe-static\/bin\/win32\/ia32($|\/)/,
   /\/onnxruntime-node\/bin\/napi-v6\/(darwin|linux)($|\/)/, /\/onnxruntime-node\/bin\/napi-v6\/win32\/arm64($|\/)/,
   /\.log$/, /\/test(s)?\//,

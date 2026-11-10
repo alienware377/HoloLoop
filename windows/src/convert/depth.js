@@ -1,10 +1,12 @@
 'use strict';
-// Depth Anything V2 Small on onnxruntime-node. DirectML (any GPU, incl. Intel
-// iGPUs on mini PCs) first, CPU as the fallback. Turns RGB frames into 8-bit
-// depth (255 = near) with flicker control across frames.
+// Depth Anything V2 style models (see models.js) on onnxruntime-node. DirectML
+// (any GPU, incl. Intel iGPUs on mini PCs) first, CPU as the fallback. Turns RGB
+// frames into 8-bit depth (255 = near) with flicker control across frames.
+const fs = require('fs');
 const path = require('path');
 const ort = require('onnxruntime-node');
 const { loadTable, resizePosEmbed } = require('./posembed');
+const { DEPTH_MODELS } = require('./models');
 
 const MODELS = path.join(__dirname, '..', '..', 'models').replace(/app\.asar([\\/])/, 'app.asar.unpacked$1');
 const MEAN = [0.485, 0.456, 0.406], STD = [0.229, 0.224, 0.225];
@@ -14,13 +16,17 @@ class DepthEngine {
 
   // W, H must be multiples of 14. batch: frames per model call on the GPU (4 runs about twice
   // as many frames a second as 1 on DirectML; the CPU fallback always uses 1).
-  async open(W, H, prefer = 'auto', batch = 1) {
+  // model: a key of DEPTH_MODELS. The extra models ship as fp16 only, so they need a GPU.
+  async open(W, H, prefer = 'auto', batch = 1, model = 'standard') {
     this.W = W; this.H = H;
-    const pe = resizePosEmbed(loadTable(path.join(MODELS, 'dav2s_posembed_1x384x37x37.f32')), 384, 37, 37, H / 14, W / 14);
-    this.peTensor = new ort.Tensor('float32', pe, [1, 384, H / 14, W / 14]);
+    const m = DEPTH_MODELS[model] || DEPTH_MODELS.standard;
+    const pe = resizePosEmbed(loadTable(path.join(MODELS, `${m.file}_posembed_1x${m.dim}x37x37.f32`)), m.dim, 37, 37, H / 14, W / 14);
+    this.peTensor = new ort.Tensor('float32', pe, [1, m.dim, H / 14, W / 14]);
     const dims = (B) => ({ batch_size: B, height: H, width: W, ph: H / 14, pw: W / 14 });
-    const tries = prefer === 'cpu' ? [['cpu', 'dav2s_fp32_pe.onnx']]
-      : [['dml', 'dav2s_fp16_pe.onnx'], ['dml', 'dav2s_fp32_pe.onnx'], ['cpu', 'dav2s_fp32_pe.onnx']];
+    const f16 = `${m.file}_fp16_pe.onnx`, f32 = `${m.file}_fp32_pe.onnx`;
+    const tries = (prefer === 'cpu' ? [['cpu', f32]] : [['dml', f16], ['dml', f32], ['cpu', f32]])
+      .filter(([, file]) => fs.existsSync(path.join(MODELS, file)));
+    if (!tries.length) throw new Error(`the ${m.label} depth model needs a graphics card; pick Standard for this video`);
     let lastErr;
     for (const [ep, file] of tries) {
       try {

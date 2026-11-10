@@ -34,11 +34,11 @@ node tools/get-models.js
 npm start
 ```
 
-`get-models.js` downloads the models and runs `tools/strip_posembed.py`, which needs Python with `onnx`, `onnxconverter-common` and `numpy`. `node build/pack.js` makes the packaged app in `dist/`.
+`get-models.js` downloads the models and runs `tools/swap_weights.py` and `tools/strip_posembed.py`, which need Python with `onnx`, `onnxconverter-common`, `numpy` and `safetensors`. `node build/pack.js` makes the packaged app in `dist/`.
 
 ## How it works
 
-- **Conversion:** Depth Anything V2 Small runs on onnxruntime with DirectML, 60-second chunks at a time, so a conversion can stop and resume. The output is a side-by-side video (colour left, depth right). Faces and poses (YuNet, RTMO) decide the framing and whether a sideways video should be turned upright.
+- **Conversion:** Depth Anything V2 Small (or Distill-Any-Depth Small or Base, chosen per video) runs on onnxruntime with DirectML, 60-second chunks at a time, so a conversion can stop and resume. The output is a side-by-side video (colour left, depth right). Faces and poses (YuNet, RTMO) decide the framing and whether a sideways video should be turned upright.
 - **Playback:** each subpixel of the Go's panel shows its own view, made straight from colour and depth by marching a ray through the depth map, so near things hide far ones. A short-term smoothing pass keeps edges from flickering when the depth changes frame to frame.
 - **Phone:** draws only when the video has a new frame, keeps up to a few seconds of video in memory, and restarts itself after a crash or reboot if allowed to draw over other apps.
 

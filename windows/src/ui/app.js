@@ -138,6 +138,16 @@ function qualityBits(it) {
     ${DETAIL.map(([v, l]) => `<option value="${v}" ${it.quality === v ? 'selected' : ''}>3D detail: ${l}</option>`).join('')}</select>`;
 }
 
+// Depth model for one video; the first choice follows the setting on the Making 3D page.
+const MODELS = [['standard', 'Standard'], ['distill', 'Distill'], ['distillbase', 'Distill Base']];
+function modelBits(it) {
+  if ((it.kind !== 'video2d' && it.kind !== 'image2d') || it.status === 'missing') return '';
+  const def = MODELS.find((d) => d[0] === S.config.convert.depthModel)?.[1] || 'Standard';
+  return `<select class="framesel" data-model="${it.id}" title="Which depth model makes this video's 3D copy">
+    <option value="" ${it.model ? '' : 'selected'}>3D model: as set (${def})</option>
+    ${MODELS.map(([v, l]) => `<option value="${v}" ${it.model === v ? 'selected' : ''}>3D model: ${l}</option>`).join('')}</select>`;
+}
+
 // A finished video being made again at another detail level keeps playing its old copy meanwhile.
 function redoBit(it) {
   if (it.redo === 'working') return `<span class="chip warn"><span class="dot"></span>New 3D ${Math.floor((it.progress || 0) * 100)}%</span>${it.eta ? `<span>${fmtEta(it.eta)}</span>` : ''}`;
@@ -203,7 +213,7 @@ function pageLibrary() {
       <div class="thumb" style="background-image:url('/thumb/${it.id}')"></div>
       <div style="min-width:0">
         <div class="name" title="${esc(it.path)}">${esc(it.name)}</div>
-        <div class="sub">${statusChip(it)}${it.duration ? `<span>${fmtTime(it.duration)}</span>` : ''}${it.status === 'converting' && it.eta ? `<span>${fmtEta(it.eta)}</span>` : ''}${redoBit(it)}${phoneBit(it)}${frameBits(it)}${qualityBits(it)}</div>
+        <div class="sub">${statusChip(it)}${it.duration ? `<span>${fmtTime(it.duration)}</span>` : ''}${it.status === 'converting' && it.eta ? `<span>${fmtEta(it.eta)}</span>` : ''}${redoBit(it)}${phoneBit(it)}${frameBits(it)}${qualityBits(it)}${modelBits(it)}</div>
         ${it.status === 'converting' || it.redo === 'working' ? `<div class="pbar"><i style="width:${Math.floor((it.progress || 0) * 100)}%"></i></div>` : ''}
         ${(it.status === 'failed' || it.redo === 'failed') && it.error ? `<div class="err">${esc(it.error.split('\n')[0].slice(0, 180))}</div>` : ''}
       </div>
@@ -244,6 +254,9 @@ function pageConvert() {
     <div class="card"><h2>Depth detail</h2>
       <p class="tip" style="margin:4px 0 10px">More detail looks a little sharper around edges but takes longer.</p>
       ${seg('convert.depthLong', [[392, 'Quick'], [518, 'Balanced'], [700, 'Fine']])}
+      <h2 style="margin-top:18px">Depth model</h2>
+      <p class="tip" style="margin:4px 0 10px">Distill Base gives the cleanest, steadiest edges on 3D models and anime, at about half the speed. Distill is as fast as Standard and a little steadier on some videos. Both need a graphics card.</p>
+      ${seg('convert.depthModel', MODELS)}
       <h2 style="margin-top:18px">Picture size</h2>
       <p class="tip" style="margin:4px 0 10px">The Go shows about 1280 pixels at most, so bigger only costs space.</p>
       ${seg('convert.maxLong', [[960, '960'], [1280, '1280'], [1600, '1600']])}
@@ -459,6 +472,7 @@ document.addEventListener('change', (e) => {
   if ('startup' in t.dataset) api('/api/config', { patch: { startup: { withWindows: t.checked } } }).catch((er) => toast(er.message));
   if (t.dataset.frame) lib('frame', { id: t.dataset.frame, frame: t.value });
   if (t.dataset.quality) lib('quality', { id: t.dataset.quality, quality: t.value || null });
+  if (t.dataset.model) lib('model', { id: t.dataset.model, model: t.value || null });
   if (t.dataset.cfgsel) {
     setCfg(t.dataset.cfgsel, Number(t.value));
     const tip = t.closest('.fld')?.nextElementSibling;

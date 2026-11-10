@@ -110,11 +110,11 @@ async function convertChunk(ctx, i) {
 }
 
 /**
- * job: { src, outFile, workDir, settings: { maxLong, depthLong, chunkSec, backend } }
+ * job: { src, outFile, workDir, settings: { maxLong, depthLong, model, chunkSec, backend } }
  * hooks: { onProgress({done,total,fps,eta,stage}), signal }
  */
 async function convert(job, hooks = {}) {
-  const s = Object.assign({ maxLong: 1280, depthLong: 518, chunkSec: 60, backend: 'auto' }, job.settings || {});
+  const s = Object.assign({ maxLong: 1280, depthLong: 518, model: 'standard', chunkSec: 60, backend: 'auto' }, job.settings || {});
   // MPEG-TS/PS files seek by guesswork, so 60 s pieces overlapped or skipped and the picture
   // drifted from the sound; a straight copy into mkv (no re-encode) seeks exactly
   let src = job.src, info = await probe(src);
@@ -140,7 +140,7 @@ async function convert(job, hooks = {}) {
   try { state = JSON.parse(fs.readFileSync(stateFile, 'utf8')); } catch {}
   // identify the source by name + size, not by folder, so moving it keeps finished pieces
   let size = 0; try { size = fs.statSync(job.src).size; } catch {}
-  const sig = { v: VERSION, pieces: 3, file: path.basename(job.src).toLowerCase(), size, geo, msz, chunkSec: s.chunkSec, rate: info.rate };
+  const sig = { v: VERSION, pieces: 3, file: path.basename(job.src).toLowerCase(), size, geo, msz, model: s.model, chunkSec: s.chunkSec, rate: info.rate };
   if (JSON.stringify(state.sig) !== JSON.stringify(sig)) state = { sig, done: [] };   // settings changed: start over
   const save = () => fs.writeFileSync(stateFile, JSON.stringify(state));
   save();
@@ -153,7 +153,7 @@ async function convert(job, hooks = {}) {
   let backend = null;
   for (let k = 0; k < lanes; k++) {
     const e = new DepthEngine();
-    try { const b = await e.open(msz.W, msz.H, s.backend, s.batch || 4); if (!backend) backend = b; engines.push(e); }
+    try { const b = await e.open(msz.W, msz.H, s.backend, s.batch || 4, s.model); if (!backend) backend = b; engines.push(e); }
     catch (err) { if (!engines.length) throw err; break; }     // no room for another: run with what opened
     if (!backend.startsWith('dml')) break;                       // CPU fallback: one is plenty
   }
@@ -212,7 +212,7 @@ async function convert(job, hooks = {}) {
   await run(FFMPEG, args);
   fs.renameSync(tmpOut, job.outFile);
   const meta = { kind: 'rgbd', depthLoc: 2, version: VERSION, width: geo.CW * 2, height: geo.CH, colorW: geo.CW, colorH: geo.CH,
-    depthW: msz.W, depthH: msz.H, fps: info.fps, duration: Math.min(info.duration, nChunks * s.chunkSec), src: job.src, backend, encoder: enc.name, made: new Date().toISOString() };
+    depthW: msz.W, depthH: msz.H, model: s.model, fps: info.fps, duration: Math.min(info.duration, nChunks * s.chunkSec), src: job.src, backend, encoder: enc.name, made: new Date().toISOString() };
   fs.writeFileSync(job.outFile + '.json', JSON.stringify(meta, null, 2));
   fs.rmSync(job.workDir, { recursive: true, force: true });
   report('done', info.duration);
@@ -221,7 +221,7 @@ async function convert(job, hooks = {}) {
 
 // A single 2D picture -> RGBD PNG (colour left, depth right).
 async function convertImage(job, hooks = {}) {
-  const s = Object.assign({ maxLong: 1600, depthLong: 518, backend: 'auto' }, job.settings || {});
+  const s = Object.assign({ maxLong: 1600, depthLong: 518, model: 'standard', backend: 'auto' }, job.settings || {});
   const info = await probe(job.src);
   const geo = outGeometry(info, Math.max(s.maxLong, 1600));
   const msz = modelSize(geo.CW, geo.CH, s.depthLong);
@@ -231,7 +231,7 @@ async function convertImage(job, hooks = {}) {
     p.on('close', (code) => code === 0 ? resolve({ stdout: Buffer.concat(chunks) }) : reject(new Error('could not read the picture')));
   });
   const engine = new DepthEngine();
-  const backend = await engine.open(msz.W, msz.H, s.backend);
+  const backend = await engine.open(msz.W, msz.H, s.backend, 1, s.model);
   const { depth } = await engine.infer(stdout, { smooth: 0 });
   await engine.close();
   const tmpOut = job.outFile + '.part.png';
@@ -244,7 +244,7 @@ async function convertImage(job, hooks = {}) {
     p.stdin.end(Buffer.from(depth.buffer, depth.byteOffset, depth.byteLength));
   });
   fs.renameSync(tmpOut, job.outFile);
-  const meta = { kind: 'rgbd', still: true, depthLoc: 2, version: VERSION, width: geo.CW * 2, height: geo.CH, src: job.src, backend, made: new Date().toISOString() };
+  const meta = { kind: 'rgbd', still: true, depthLoc: 2, version: VERSION, width: geo.CW * 2, height: geo.CH, model: s.model, src: job.src, backend, made: new Date().toISOString() };
   fs.writeFileSync(job.outFile + '.json', JSON.stringify(meta, null, 2));
   hooks.onProgress?.({ stage: 'done', done: 1, total: 1, speed: 0, eta: 0, backend });
   return meta;
