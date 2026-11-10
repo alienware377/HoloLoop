@@ -17,10 +17,14 @@ data class Look(
     val edgeFix: Int = 2,
     /** Steady edges: smooth the depth between frames where the picture is still. 0 off, 1 normal, 2 strong. */
     val steady: Int = 1,
+    /** The same where something moves (the edge against the background). 0 off, 1 light, 2 strong. */
+    val steadyMove: Int = 1,
 ) {
     companion object {
         /** Names for [edgeFix], in order. */
         val STEADY_MODES = listOf("Off", "Normal", "Strong")
+        val MOVE_MODES = listOf("Off", "Light", "Strong")
+        val SMOOTHNESS = listOf(8 to "Light", 14 to "Balanced", 24 to "Best")
         val EDGE_MODES = listOf("Off (original)", "Clean colours", "Clean + fill gaps", "Fill gaps + calmer sides", "Best quality (slow)")
     }
 }

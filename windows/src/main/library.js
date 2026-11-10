@@ -31,7 +31,10 @@ function emit() { for (const l of listeners) { try { l(lib); } catch {} } }
 function load() {
   lib = readJson(P.library, { items: [], folders: [] }, (m) => require('./log').warn(m));
   lib.items ||= []; lib.folders ||= [];
-  for (const it of lib.items) if (it.status === 'converting') it.status = 'queued';   // crashed mid-way
+  for (const it of lib.items) {                   // crashed mid-way
+    if (it.status === 'converting') it.status = 'queued';
+    if (it.redo === 'working') it.redo = true;
+  }
   return lib;
 }
 function get() { return lib || load(); }
@@ -50,8 +53,12 @@ function fileKey(file, st) {
 
 function safeName(s) { return s.replace(/[^\w.\- ]+/g, '_').slice(0, 80); }
 
+// Per-video depth detail (model input size); none = the app-wide setting.
+const QUALITY = { quick: 392, balanced: 518, fine: 700 };
+
+// A video with its own depth detail gets its own name, e.g. "clip.0123456789ab.fine_rgbd.mp4".
 function cachePathFor(item, cacheDir) {
-  return path.join(cacheDir, `${safeName(path.basename(item.path, path.extname(item.path)))}.${item.key}_rgbd.mp4`);
+  return path.join(cacheDir, `${safeName(path.basename(item.path, path.extname(item.path)))}.${item.key}${item.quality ? '.' + item.quality : ''}_rgbd.mp4`);
 }
 
 function addFile(file, { fromFolder = null } = {}) {
@@ -64,7 +71,7 @@ function addFile(file, { fromFolder = null } = {}) {
   let st; try { st = fs.statSync(abs); } catch { return null; }
   if (!st.isFile() || st.size < 1024) return null;
   // a 3D copy HoloLoop made for a video that is already in the list
-  const km = path.basename(abs).match(/\.([0-9a-f]{12})_rgbd\.(mp4|png)$/i);
+  const km = path.basename(abs).match(/\.([0-9a-f]{12})(?:\.[a-z]+)?_rgbd\.(mp4|png)$/i);
   if (km && L.items.some((i) => i.key === km[1].toLowerCase())) return null;
   const item = {
     id: crypto.randomBytes(6).toString('hex'), path: abs, name: path.basename(abs, path.extname(abs)),
@@ -78,14 +85,15 @@ function addFile(file, { fromFolder = null } = {}) {
   return item;
 }
 
-// If the 3D copy for this exact file is already in the 3D folder, use it.
+// If the 3D copy for this exact file is already in the 3D folder, use it, at any detail level.
 function adoptCache(item) {
   try {
     const dir = require('./config').get().convert.cacheDir;
-    const f = cachePathFor(item, dir).replace(/\.mp4$/, item.still ? '.png' : '.mp4');
-    if (fs.existsSync(f) && fs.existsSync(f + '.json')) {
+    for (const quality of new Set([item.quality || null, null, ...Object.keys(QUALITY)])) {
+      const f = cachePathFor({ ...item, quality }, dir).replace(/\.mp4$/, item.still ? '.png' : '.mp4');
+      if (!fs.existsSync(f) || !fs.existsSync(f + '.json')) continue;
       let meta = null; try { meta = JSON.parse(fs.readFileSync(f + '.json', 'utf8')); } catch {}
-      Object.assign(item, { status: 'ready', cachePath: f, progress: 1, meta });
+      Object.assign(item, { status: 'ready', cachePath: f, progress: 1, meta, quality });
       return true;
     }
   } catch {}
@@ -161,6 +169,7 @@ function mergeMoved() {
         if (!it.enabled) twin.enabled = false;
         if (it.frame && it.frame !== 'rotatebig' && (!twin.frame || twin.frame === 'rotatebig')) twin.frame = it.frame;
         if (it.look && !twin.look) twin.look = it.look;
+        if (it.quality && !twin.quality) twin.quality = it.quality;
         if (it.resumeAt && !twin.resumeAt) twin.resumeAt = it.resumeAt;
         continue;                                   // drop the stale entry
       }
@@ -181,7 +190,7 @@ function rescan() {
   const keys = new Set(L.items.map((i) => i.key));
   L.items = L.items.filter((it) => {
     if (isOurs(it.path)) return false;
-    const km = path.basename(it.path).match(/\.([0-9a-f]{12})_rgbd\.(mp4|png)$/i);
+    const km = path.basename(it.path).match(/\.([0-9a-f]{12})(?:\.[a-z]+)?_rgbd\.(mp4|png)$/i);
     return !(km && it.status === 'missing' && (keys.has(km[1].toLowerCase()) || !fs.existsSync(it.path)));
   });
   for (const it of L.items) {
@@ -240,4 +249,4 @@ function view(it, framing) {
   return { frame: 'rotate', framing: framing && framing.rotBig ? Object.assign({}, framing, { rot: framing.rotBig }) : framing };
 }
 
-module.exports = { view, load, get, save, onChange, addPaths, addFolder, removeFolder, rescan, find, patchItem, removeItem, move, reorder, playable, classify, cachePathFor };
+module.exports = { view, load, get, save, onChange, addPaths, addFolder, removeFolder, rescan, find, patchItem, removeItem, move, reorder, playable, classify, cachePathFor, QUALITY };

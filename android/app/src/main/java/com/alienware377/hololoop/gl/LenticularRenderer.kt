@@ -116,7 +116,11 @@ class LenticularRenderer(private val context: Context) : GLSurfaceView.Renderer 
         }
         val lk = look
         val cal = calibration
-        (tex as? VideoTexture)?.let { it.steady = if (item.isRgbd) (lk?.steady ?: 0) else 0; it.depthLoc = item.depthLoc }
+        (tex as? VideoTexture)?.let {
+            it.steady = if (item.isRgbd) (lk?.steady ?: 0) else 0
+            it.steadyMove = if (item.isRgbd) (lk?.steadyMove ?: 0) else 0
+            it.depthLoc = item.depthLoc
+        }
         val fresh = tex.update()          // new frame first, so ensure() hands back the newest (steadied) picture
         val texId = tex.ensure()
 

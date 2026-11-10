@@ -429,6 +429,13 @@
                     android:layout_marginTop="4dp" />
 
                 <com.google.android.material.button.MaterialButton
+                    android:id="@+id/steadyMoveBtn"
+                    style="@style/Widget.Material3.Button.OutlinedButton"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp" />
+
+                <com.google.android.material.button.MaterialButton
                     android:id="@+id/testBtn"
                     style="@style/Widget.Material3.Button.TonalButton"
                     android:layout_width="match_parent"

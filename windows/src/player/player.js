@@ -55,7 +55,7 @@ gl.uniform1i(U.uiTex, 1);
 
 // ------------------------------------------------------------------ steady edges
 // Each new RGBD video frame goes through SH.STEADY into one of two textures (ping-pong):
-// depth that wobbles where the picture is still gets smoothed between frames.
+// depth that wobbles gets smoothed between frames, more where the picture is still.
 const steadyProg = gl.createProgram();
 gl.attachShader(steadyProg, compile(gl.VERTEX_SHADER, SH.VERT));
 gl.attachShader(steadyProg, compile(gl.FRAGMENT_SHADER, SH.STEADY));
@@ -63,16 +63,18 @@ gl.bindAttribLocation(steadyProg, posLoc, 'position');
 gl.linkProgram(steadyProg);
 if (!gl.getProgramParameter(steadyProg, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(steadyProg));
 const SU = {};
-for (const n of ['cur', 'prev', 'depthLoc', 'still', 'texel']) SU[n] = gl.getUniformLocation(steadyProg, n);
+for (const n of ['cur', 'prev', 'depthLoc', 'still', 'moving', 'texel']) SU[n] = gl.getUniformLocation(steadyProg, n);
 const stab = [makeTex(2), makeTex(2)];
 const stabFbo = gl.createFramebuffer();
 let stabW = 0, stabH = 0, stabI = 0, stabFresh = true, stabT = 0;
 let drawTex = contentTex;
-const steadyOn = () => !!(look.steady ?? 1) && item?.kind === 'rgbd' && !item.still;
+const STILL = [1, 0.25, 0.1], MOVING = [1, 0.5, 0.3];   // share of the new depth per frame: off, normal/light, strong
+const steadyLevels = () => [look.steady ?? 1, look.steadyMove ?? 1];
+const steadyOn = () => steadyLevels().some(Boolean) && item?.kind === 'rgbd' && !item.still;
 
 function steady(w, h) {
-  const level = look.steady ?? 1;
-  if (!item || item.kind !== 'rgbd' || item.still || !level) { drawTex = contentTex; stabFresh = true; return; }
+  const [level, move] = steadyLevels();
+  if (!steadyOn()) { drawTex = contentTex; stabFresh = true; return; }
   const t = video().currentTime || 0;
   if (t < stabT - 0.5) stabFresh = true;          // looped back to the start
   stabT = t;
@@ -89,7 +91,8 @@ function steady(w, h) {
   gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, src);
   gl.uniform1i(SU.cur, 0); gl.uniform1i(SU.prev, 2);
   gl.uniform1i(SU.depthLoc, item.depthLoc ?? 2);
-  gl.uniform1f(SU.still, stabFresh ? 1 : level >= 2 ? 0.1 : 0.25);
+  gl.uniform1f(SU.still, stabFresh ? 1 : STILL[level] ?? 0.25);
+  gl.uniform1f(SU.moving, stabFresh ? 1 : MOVING[move] ?? 0.5);
   gl.uniform2f(SU.texel, 1 / w, 1 / h);
   gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
@@ -297,7 +300,7 @@ async function startItem(next) {
 }
 
 api.on('player:calibration', (c) => { calib = c; });
-api.on('player:look', (l) => { look = Object.assign({}, look, l); if (!look.steady) stabFresh = true; });
+api.on('player:look', (l) => { look = Object.assign({}, look, l); if (!steadyOn()) stabFresh = true; });
 api.on('player:debug', (d) => {
   debug = Object.assign({}, debug, d); if (d.size) resize(); if (d.grab) debug.grab = performance.now();
   if (d.stepTo != null) { try { video().currentTime = d.stepTo; } catch {} }   // dev: next frame, keeps the steady-edges history

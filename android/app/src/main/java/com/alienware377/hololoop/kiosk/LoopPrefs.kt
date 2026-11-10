@@ -74,7 +74,7 @@ class LoopPrefs(context: Context) {
             put("depthiness", l.depthiness.toDouble()); put("focus", l.focus.toDouble())
             put("fit", if (l.fill) "fill" else "fit"); put("zoom", l.zoom.toDouble())
             put("iterations", l.iterations); put("depthInvert", l.depthInvert); put("filterEdge", l.filterEdge)
-            put("edgeFix", l.edgeFix); put("steady", l.steady)
+            put("edgeFix", l.edgeFix); put("steady", l.steady); put("steadyMove", l.steadyMove)
         }.toString()
 
         fun lookFrom(s: String?): Look {
@@ -92,6 +92,7 @@ class LoopPrefs(context: Context) {
             filterEdge = o.optBoolean("filterEdge", true),
             edgeFix = o.optInt("edgeFix", 2).takeIf { it in Look.EDGE_MODES.indices } ?: 2,
             steady = o.optInt("steady", 1).takeIf { it in Look.STEADY_MODES.indices } ?: 1,
+            steadyMove = o.optInt("steadyMove", 1).takeIf { it in Look.MOVE_MODES.indices } ?: 1,
         )
     }
 }

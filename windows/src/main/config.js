@@ -6,7 +6,7 @@ function defaults() {
   return {
     version: 1,
     playlist: { order: 'inOrder', resumeLongVideos: true, resumeMinMinutes: 10, transitionSec: 0.6 },
-    look: { depthiness: 0.32, focus: 0.5, fit: 'fit', zoom: 1, iterations: 14, filterEdge: true, depthInvert: false, edgeFix: 2, steady: 1 },   // edgeFix 2 = clean + fill gaps (0 = the original look)
+    look: { depthiness: 0.32, focus: 0.5, fit: 'fit', zoom: 1, iterations: 14, filterEdge: true, depthInvert: false, edgeFix: 2, steady: 1, steadyMove: 1 },   // edgeFix 2 = clean + fill gaps (0 = the original look)
     audio: { volume: 0.8, muted: false },
     phone: { compress: false, mbps: 4 },      // smaller copies for the phone, Mbit/s
     convert: { enabled: true, when: 'anytime', maxLong: 1280, depthLong: 518, backend: 'auto', cacheDir: P.defaultCache },

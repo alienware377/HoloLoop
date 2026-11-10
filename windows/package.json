@@ -1,7 +1,7 @@
 {
   "name": "hololoop",
   "productName": "HoloLoop",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Kiosk hologram player for the Looking Glass Go: endless playlist, automatic 2D-to-3D conversion, sleep schedule, phone remote.",
   "main": "src/main/main.js",
   "scripts": {

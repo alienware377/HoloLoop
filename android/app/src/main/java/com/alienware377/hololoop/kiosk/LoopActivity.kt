@@ -72,6 +72,7 @@ class LoopActivity : AppCompatActivity(), PlaybackEvents, GoMenu.Host, FxPanel.H
     private var stillRunnable: Runnable? = null
 
     private var refreshLookUi: () -> Unit = {}     // set in bindViews: redraws the 3D look controls
+    private var lookEditor: ((com.alienware377.hololoop.model.Look) -> com.alienware377.hololoop.model.Look) -> Unit = {}
     private lateinit var root: View
 
     @Volatile private var syncing = false
@@ -263,6 +264,15 @@ class LoopActivity : AppCompatActivity(), PlaybackEvents, GoMenu.Host, FxPanel.H
 
     private fun fxButtonText() {
         findViewById<MaterialButton>(R.id.fxBtn)?.text = getString(R.string.loop_filters) + if (fx.on && fx.active.isNotEmpty()) " (on)" else ""
+    }
+
+    // the Go menu's 3D settings: the same as the phone's own, so a change there makes them this phone's
+    override val look get() = prefs.look
+    override fun editLook(edit: (com.alienware377.hololoop.model.Look) -> com.alienware377.hololoop.model.Look) { lookEditor(edit); refreshLookUi(); goMenu?.refresh() }
+    override val ownLook get() = prefs.useLocalLook
+    override fun setOwnLook(on: Boolean) {
+        if (on && !prefs.useLocalLook) prefs.localLook = prefs.pcLook
+        prefs.useLocalLook = on; presentation?.look = prefs.look; refreshLookUi(); goMenu?.refresh()
     }
 
     override fun touched() { main.removeCallbacks(menuTimeout); main.postDelayed(menuTimeout, MENU_TIMEOUT_MS) }
@@ -498,7 +508,7 @@ class LoopActivity : AppCompatActivity(), PlaybackEvents, GoMenu.Host, FxPanel.H
                 val list = pc.fetchList()
                 list.look?.let { prefs.pcLook = LoopPrefs.lookFrom(it) }
                 list.calibration?.let { raw -> applyPcCalibration(raw) }
-                main.post { presentation?.look = prefs.look; refreshLookUi() }
+                main.post { presentation?.look = prefs.look; refreshLookUi(); goMenu?.refresh() }
                 prefs.playlistJson = LoopItem.listJson(list.items)
                 pc.dropReplaced(list.items)
                 main.post { items = list.items.filter { x -> pc.isReady(x) } }
@@ -646,11 +656,17 @@ class LoopActivity : AppCompatActivity(), PlaybackEvents, GoMenu.Host, FxPanel.H
         fun showSteady() { steadyBtn.text = "Steady edges: " + steadyModes[prefs.look.steady.coerceIn(0, steadyModes.size - 1)] }
         steadyBtn.setOnClickListener { pushLook { it.copy(steady = (prefs.look.steady + 1) % steadyModes.size) }; showSteady() }
         showSteady()
+        val moveBtn = findViewById<MaterialButton>(R.id.steadyMoveBtn)
+        val moveModes = com.alienware377.hololoop.model.Look.MOVE_MODES
+        fun showMove() { moveBtn.text = "Steady moving things: " + moveModes[prefs.look.steadyMove.coerceIn(0, moveModes.size - 1)] }
+        moveBtn.setOnClickListener { pushLook { it.copy(steadyMove = (prefs.look.steadyMove + 1) % moveModes.size) }; showMove() }
+        showMove()
         showLook()
-        refreshLookUi = { showLook(); showEdge(); showSteady(); render() }
+        lookEditor = { pushLook(it) }
+        refreshLookUi = { showLook(); showEdge(); showSteady(); showMove(); render() }
         localLook.setOnCheckedChangeListener { _, on ->
             if (on && !prefs.useLocalLook) prefs.localLook = prefs.pcLook     // start from what the PC had
-            prefs.useLocalLook = on; presentation?.look = prefs.look; refreshLookUi()
+            prefs.useLocalLook = on; presentation?.look = prefs.look; refreshLookUi(); goMenu?.refresh()
         }
         depth.addOnChangeListener { _, v, u -> if (u) pushLook { it.copy(depthiness = v) } }
         focus.addOnChangeListener { _, v, u -> if (u) pushLook { it.copy(focus = v) } }

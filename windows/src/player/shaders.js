@@ -296,10 +296,12 @@ void main() {
 `;
 
 const STEADY = `#version 300 es
-// Steady edges: the converter's depth wobbles from frame to frame even where the
-// picture is still, so silhouettes shake at side views. Where the colour around a
-// depth texel has not changed since the last frame, its depth only creeps toward
-// the new value; where it changed (real motion, a cut) the new depth is taken at once.
+// Steady edges: the converter's depth wobbles from frame to frame, so silhouettes
+// shake at side views. Where the colour around a depth texel has not changed since
+// the last frame, its depth only creeps toward the new value ([still]); where it
+// changed (motion, a cut) it takes a bigger share ([moving], 1 = the new depth at once).
+// The edge of something moving against the background wobbles the most, so it is
+// smoothed too, only lighter, or the depth would trail behind.
 // The stored depth is rounded to whole 8-bit levels on purpose: a still spot only moves
 // once the new depth is a few levels away, which keeps it extra calm (the 3D shader reads r).
 // Kept in step: HoloLoop PC src/player/shaders.js STEADY and the phone's steady.frag.
@@ -309,6 +311,7 @@ uniform sampler2D cur;     // this frame (colour + depth), v=0 is the bottom
 uniform sampler2D prev;    // the last steadied frame, same layout (its colour half = last frame's colour)
 uniform int depthLoc;      // 0 top, 1 bottom, 2 right, 3 left
 uniform float still;       // share of the new depth a still spot takes per frame (1 = start over)
+uniform float moving;      // the same where the picture moved
 uniform vec2 texel;        // 1 / frame size in pixels (the pass runs at the video's real size)
 out vec4 color;
 
@@ -334,7 +337,7 @@ void main() {
       motion = max(motion, abs(luma(texture(cur, q).rgb) - luma(texture(prev, q).rgb)));
     }
   }
-  float a = mix(still, 1.0, smoothstep(0.03, 0.10, motion));
+  float a = mix(still, moving, smoothstep(0.03, 0.10, motion));
   float z = floor(mix(texture(prev, uv).r, now.r, a) * 255.0 + 0.5) / 255.0;   // round ourselves: same on every GPU
   color = vec4(vec3(z), 1.0);
 }

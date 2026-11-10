@@ -128,6 +128,24 @@ function frameBits(it) {
     <option value="rotatebig" ${it.frame === 'rotatebig' ? 'selected' : ''}>Auto + turn for sideways people and close-ups</option></select>`;
 }
 
+// Depth detail for one video; the first choice follows the setting on the Making 3D page.
+const DETAIL = [['quick', 'Quick', 392], ['balanced', 'Balanced', 518], ['fine', 'Fine', 700]];
+function qualityBits(it) {
+  if ((it.kind !== 'video2d' && it.kind !== 'image2d') || it.status === 'missing') return '';
+  const def = DETAIL.find((d) => d[2] === S.config.convert.depthLong)?.[1] || 'custom';
+  return `<select class="framesel" data-quality="${it.id}" title="How much depth detail this video's 3D copy gets">
+    <option value="" ${it.quality ? '' : 'selected'}>3D detail: as set (${def})</option>
+    ${DETAIL.map(([v, l]) => `<option value="${v}" ${it.quality === v ? 'selected' : ''}>3D detail: ${l}</option>`).join('')}</select>`;
+}
+
+// A finished video being made again at another detail level keeps playing its old copy meanwhile.
+function redoBit(it) {
+  if (it.redo === 'working') return `<span class="chip warn"><span class="dot"></span>New 3D ${Math.floor((it.progress || 0) * 100)}%</span>${it.eta ? `<span>${fmtEta(it.eta)}</span>` : ''}`;
+  if (it.redo === 'failed') return '<span class="chip bad"><span class="dot"></span>New 3D didn\'t work</span>';
+  if (it.redo) return '<span title="The current 3D copy plays until the new one is made">New 3D waiting</span>';
+  return '';
+}
+
 // ------------------------------------------------------------------ pages
 function pageHome() {
   const n = S.now || {};
@@ -185,12 +203,12 @@ function pageLibrary() {
       <div class="thumb" style="background-image:url('/thumb/${it.id}')"></div>
       <div style="min-width:0">
         <div class="name" title="${esc(it.path)}">${esc(it.name)}</div>
-        <div class="sub">${statusChip(it)}${it.duration ? `<span>${fmtTime(it.duration)}</span>` : ''}${it.status === 'converting' && it.eta ? `<span>${fmtEta(it.eta)}</span>` : ''}${phoneBit(it)}${frameBits(it)}</div>
-        ${it.status === 'converting' ? `<div class="pbar"><i style="width:${Math.floor((it.progress || 0) * 100)}%"></i></div>` : ''}
-        ${it.status === 'failed' && it.error ? `<div class="err">${esc(it.error.split('\n')[0].slice(0, 180))}</div>` : ''}
+        <div class="sub">${statusChip(it)}${it.duration ? `<span>${fmtTime(it.duration)}</span>` : ''}${it.status === 'converting' && it.eta ? `<span>${fmtEta(it.eta)}</span>` : ''}${redoBit(it)}${phoneBit(it)}${frameBits(it)}${qualityBits(it)}</div>
+        ${it.status === 'converting' || it.redo === 'working' ? `<div class="pbar"><i style="width:${Math.floor((it.progress || 0) * 100)}%"></i></div>` : ''}
+        ${(it.status === 'failed' || it.redo === 'failed') && it.error ? `<div class="err">${esc(it.error.split('\n')[0].slice(0, 180))}</div>` : ''}
       </div>
       <div class="acts">
-        ${it.status === 'failed' ? `<button class="mini" title="Try again" data-act="retry" data-id="${it.id}">${ico('retry')}</button>` : ''}
+        ${it.status === 'failed' || it.redo === 'failed' ? `<button class="mini" title="Try again" data-act="retry" data-id="${it.id}">${ico('retry')}</button>` : ''}
         ${S.go && it.status === 'ready' ? `<button class="mini" title="Play now" data-act="playId" data-id="${it.id}">${ico('play')}</button>` : ''}
         <button class="mini" title="Move up" data-act="move" data-d="-1" data-id="${it.id}" ${i === 0 ? 'disabled' : ''}>${ico('up')}</button>
         <button class="mini" title="Move down" data-act="move" data-d="1" data-id="${it.id}" ${i === items.length - 1 ? 'disabled' : ''}>${ico('down')}</button>
@@ -263,8 +281,11 @@ function pageLook() {
       ${range('look.zoom', 'Zoom', 1, 2, 0.01, (v) => Number(v).toFixed(2) + 'x')}
       <div style="margin-top:14px">${edgeSel()}</div>
       <h2 style="margin-top:14px">Steady edges</h2>
-      <p class="tip" style="margin:4px 0 8px">Smooths the depth between frames where the picture is still, so edges stop shaking. Moving things stay sharp.</p>
+      <p class="tip" style="margin:4px 0 8px">Smooths the depth between frames, so edges stop shaking.</p>
       <div>${seg('look.steady', [[0, 'Off'], [1, 'Normal'], [2, 'Strong']])}</div>
+      <h2 style="margin-top:14px">Steady moving things</h2>
+      <p class="tip" style="margin:4px 0 8px">Also smooths the edge where something moves against the background. Strong is calmer, but fast moves can leave a short trail.</p>
+      <div>${seg('look.steadyMove', [[0, 'Off'], [1, 'Light'], [2, 'Strong']])}</div>
       <h2 style="margin-top:14px">Smoothness</h2><div style="margin-top:8px">${seg('look.iterations', [[8, 'Light'], [14, 'Balanced'], [24, 'Best']])}</div>
       <div style="margin-top:12px">${sw('look.depthInvert', 'Flip depth', 'If faces look pushed in instead of popping out')}</div>
       <div class="btns">${S.go ? `<button class="ghost" data-act="testPattern">${ico('eye')}Show test pattern</button><button class="ghost" data-act="next">${ico('next')}Back to the videos</button>` : ''}</div>
@@ -437,6 +458,7 @@ document.addEventListener('change', (e) => {
   if (t.dataset.range) { setCfg(t.dataset.range, Number(t.value)); busyUntil = Date.now() + 600; }
   if ('startup' in t.dataset) api('/api/config', { patch: { startup: { withWindows: t.checked } } }).catch((er) => toast(er.message));
   if (t.dataset.frame) lib('frame', { id: t.dataset.frame, frame: t.value });
+  if (t.dataset.quality) lib('quality', { id: t.dataset.quality, quality: t.value || null });
   if (t.dataset.cfgsel) {
     setCfg(t.dataset.cfgsel, Number(t.value));
     const tip = t.closest('.fld')?.nextElementSibling;

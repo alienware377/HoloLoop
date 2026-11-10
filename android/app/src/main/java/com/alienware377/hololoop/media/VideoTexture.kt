@@ -42,8 +42,11 @@ class VideoTexture(
     private var blitProgram = 0
     private var quadVbo = 0
 
-    /** Steady edges (set by the renderer each frame): 0 off, 1 normal, 2 strong; and where the depth half is. */
+    /** Steady edges (set by the renderer each frame): 0 off, 1 normal, 2 strong, for still and moving
+     *  parts; and where the depth half is. */
     @Volatile var steady = 0
+    @Volatile var steadyMove = 0
+    private val steadyOn get() = steady > 0 || steadyMove > 0
     @Volatile var depthLoc = 2
     private val stab = IntArray(2)        // ping-pong: the steadied frames
     private var stabI = 0
@@ -52,8 +55,8 @@ class VideoTexture(
     private var outTex = 0                // what the lenticular shader samples: tex2d, or a steadied copy
     private var stabW = 0                 // the steadied copies are the video's REAL size (tex2d can be a guess)
     private var stabH = 0
-    override val texW: Int get() = if (steady > 0 && outTex != 0 && outTex != tex2d && stabW > 0) stabW else width
-    override val texH: Int get() = if (steady > 0 && outTex != 0 && outTex != tex2d && stabH > 0) stabH else height
+    override val texW: Int get() = if (steadyOn && outTex != 0 && outTex != tex2d && stabW > 0) stabW else width
+    override val texH: Int get() = if (steadyOn && outTex != 0 && outTex != tex2d && stabH > 0) stabH else height
     private var stabT = 0f
     @Volatile private var restartSteady = false
     private val stMatrix = FloatArray(16)
@@ -80,7 +83,7 @@ class VideoTexture(
     }
 
     override fun ensure(): Int {
-        if (tex2d != 0) return if (steady > 0 && outTex != 0) outTex else tex2d
+        if (tex2d != 0) return if (steadyOn && outTex != 0) outTex else tex2d
 
         // OES texture fed by the decoder
         val oes = IntArray(1)
@@ -192,10 +195,11 @@ class VideoTexture(
         return true
     }
 
-    /** Smooth the depth between frames where the picture is still (see steady.frag). */
+    /** Smooth the depth between frames, more where the picture is still (see steady.frag). */
     private fun steadyPass() {
         val level = steady
-        if (level <= 0) { outTex = tex2d; stabFresh = true; return }
+        val move = steadyMove
+        if (level <= 0 && move <= 0) { outTex = tex2d; stabFresh = true; return }
         if (restartSteady) { restartSteady = false; stabFresh = true }
         val t = mediaTimeSec()
         if (t < stabT - 0.5f) stabFresh = true          // looped back to the start
@@ -235,7 +239,8 @@ class VideoTexture(
         GLES30.glUniform1i(GLES30.glGetUniformLocation(steadyProgram, "cur"), 0)
         GLES30.glUniform1i(GLES30.glGetUniformLocation(steadyProgram, "prev"), 1)
         GLES30.glUniform1i(GLES30.glGetUniformLocation(steadyProgram, "depthLoc"), depthLoc)
-        GLES30.glUniform1f(GLES30.glGetUniformLocation(steadyProgram, "still"), if (stabFresh) 1f else if (level >= 2) 0.1f else 0.25f)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(steadyProgram, "still"), if (stabFresh) 1f else STILL.getOrElse(level) { 0.25f })
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(steadyProgram, "moving"), if (stabFresh) 1f else MOVING.getOrElse(move) { 0.5f })
         GLES30.glUniform2f(GLES30.glGetUniformLocation(steadyProgram, "texel"), 1f / sw, 1f / sh)
         GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4)
         GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
@@ -314,3 +319,7 @@ class VideoTexture(
         tex2d = 0; oesTex = 0; fbo = 0; blitProgram = 0; quadVbo = 0
     }
 }
+
+// Share of the new depth a spot takes per frame for each steady level: off, normal/light, strong.
+private val STILL = floatArrayOf(1f, 0.25f, 0.1f)
+private val MOVING = floatArrayOf(1f, 0.5f, 0.3f)

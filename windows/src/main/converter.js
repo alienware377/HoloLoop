@@ -25,10 +25,7 @@ function ensureWorker() {
   worker.on('exit', (code) => {
     log.warn('converter worker exited ' + code);
     worker = null; workerReady = false;
-    if (current) {
-      library.patchItem(current.id, { status: 'queued' });
-      current = null;
-    }
+    if (current) { requeue(library.find(current.id)); current = null; }
     setTimeout(tick, 3000);
   });
 }
@@ -49,12 +46,17 @@ function onMessage(m) {
     emit({ state: 'working', id: current.id, name: current.name, ...p });
   } else if (m.type === 'done') {
     log.info(`converted ${current.name} (${m.meta.backend}, ${m.meta.encoder || 'png'})`);
-    library.patchItem(current.id, { status: 'ready', cachePath: current.outFile, progress: 1, error: null, meta: m.meta, eta: null });
+    finish(current.id, current.outFile, m.meta);
     current = null; emit({ state: 'idle' });
     setTimeout(tick, 200);
   } else if (m.type === 'failed') {
-    if (m.cancelled) library.patchItem(current.id, { status: 'queued' });
-    else { log.warn(`convert failed ${current.name}: ${m.error}`); library.patchItem(current.id, { status: 'failed', error: m.error }); }
+    const it = library.find(current.id);
+    if (m.cancelled) requeue(it);
+    else {
+      log.warn(`convert failed ${current.name}: ${m.error}`);
+      library.patchItem(current.id, current.redo ? { redo: 'failed', error: m.error } : { status: 'failed', error: m.error });
+    }
+    if (it && library.cachePathFor(it, cacheDir()) !== current.outFile) dropFiles(current.outFile + '.work');
     current = null; emit({ state: 'idle' });
     setTimeout(tick, 1000);
   }
@@ -114,7 +116,51 @@ function tickFrame() {
 }
 
 function nextItem() {
-  return library.get().items.find((i) => i.enabled && i.status === 'queued');
+  const items = library.get().items.filter((i) => i.enabled);
+  return items.find((i) => i.status === 'queued') || items.find((i) => i.status === 'ready' && i.redo === true);
+}
+
+// A stopped job goes back in line, unless a detail change already moved it on.
+function requeue(it) {
+  if (!it) return;
+  if (it.redo === 'working') library.patchItem(it.id, { redo: true });
+  else if (it.status === 'converting') library.patchItem(it.id, { status: 'queued' });
+}
+
+function outFileFor(it) { return library.cachePathFor(it, cacheDir()).replace(/\.mp4$/, it.still ? '.png' : '.mp4'); }
+
+function dropFiles(...files) { for (const f of files) { try { fs.rmSync(f, { recursive: true, force: true }); } catch {} } }
+
+// A finished 3D copy. When it replaces an older copy at another detail level, that copy
+// and its phone copies go, so each video keeps one.
+function finish(id, outFile, meta) {
+  const it = library.find(id);
+  if (!it) return;
+  const old = it.cachePath;
+  library.patchItem(id, { status: 'ready', cachePath: outFile, progress: 1, error: null, meta, eta: null, redo: null });
+  if (outFile !== outFileFor(it)) library.patchItem(id, { redo: true });   // detail changed while it ran
+  if (old && old !== outFile) {
+    const base = path.basename(old, path.extname(old)) + '.phone', pdir = path.join(path.dirname(old), 'Phone copies');
+    let phones = []; try { phones = fs.readdirSync(pdir).filter((n) => n.startsWith(base)).map((n) => path.join(pdir, n)); } catch {}
+    dropFiles(old, old + '.json', ...phones);
+  }
+}
+
+/** Per-video depth detail. A finished video keeps playing its old copy until the new one is made. */
+function setQuality(id, q) {
+  const it = library.find(id);
+  if (!it || (it.kind !== 'video2d' && it.kind !== 'image2d')) return;
+  q = library.QUALITY[q] ? q : null;
+  if ((it.quality || null) === q) return;
+  const patch = { quality: q };
+  if (it.status === 'ready' && it.cachePath) {
+    const redo = path.basename(it.cachePath) !== path.basename(outFileFor(Object.assign({}, it, patch)));   // the 3D folder may have moved
+    Object.assign(patch, { redo: redo || null, error: null, progress: redo ? 0 : 1 });
+  } else if (it.status === 'failed') Object.assign(patch, { status: 'queued', error: null });
+  else if (it.status === 'converting') patch.status = 'queued';
+  library.patchItem(id, patch);
+  if (current && current.id === id) cancel();
+  tick();
 }
 
 // Ready 3D videos that still need their framing worked out (new ones, and ones
@@ -145,22 +191,23 @@ function tick() {
   if (!it) { emit(fcurrent ? { state: 'working', id: fcurrent.id, name: fcurrent.name, stage: 'framing', done: 0, total: 0 } : { state: 'idle' }); scheduleIdleStop(); return; }
 
   // Already converted (same file seen before, or a cache copied from another PC)?
-  const outFile = library.cachePathFor(it, cacheDir()).replace(/\.mp4$/, it.still ? '.png' : '.mp4');
+  const outFile = outFileFor(it);
   if (fs.existsSync(outFile) && fs.existsSync(outFile + '.json')) {
     let meta = null; try { meta = JSON.parse(fs.readFileSync(outFile + '.json', 'utf8')); } catch {}
-    library.patchItem(it.id, { status: 'ready', cachePath: outFile, progress: 1, meta });
+    finish(it.id, outFile, meta);
     setTimeout(tick, 50);
     return;
   }
   clearTimeout(idleTimer); idleTimer = null;
   ensureWorker();
   if (!workerReady) return;
-  current = { id: it.id, name: it.name, outFile };
-  library.patchItem(it.id, { status: 'converting', progress: it.progress || 0, error: null });
+  const redo = it.status === 'ready';
+  current = { id: it.id, name: it.name, outFile, redo };
+  library.patchItem(it.id, redo ? { redo: 'working', progress: 0, error: null } : { status: 'converting', progress: it.progress || 0, error: null });
   emit({ state: 'working', id: it.id, name: it.name, stage: 'starting', done: 0, total: 0 });
   worker.postMessage({ type: 'job', job: {
     id: it.id, src: it.path, still: !!it.still, outFile, workDir: outFile + '.work',
-    settings: { maxLong: c.maxLong, depthLong: c.depthLong, backend: c.backend, chunkSec: 60 },
+    settings: { maxLong: c.maxLong, depthLong: library.QUALITY[it.quality] || c.depthLong, backend: c.backend, chunkSec: 60 },
   } });
 }
 
@@ -170,7 +217,7 @@ function scheduleIdleStop() {
 
 function cancel() { if (current && worker) worker.postMessage({ type: 'cancel' }); }
 
-function retry(id) { library.patchItem(id, { status: 'queued', error: null }); tick(); }
+function retry(id) { const it = library.find(id); library.patchItem(id, it && it.redo ? { redo: true, error: null } : { status: 'queued', error: null }); tick(); }
 
 function start(allowFn) {
   allowed = allowFn || allowed;
@@ -180,4 +227,4 @@ function start(allowFn) {
   tick();
 }
 
-module.exports = { start, tick, cancel, retry, status: () => lastStatus, onStatus: (f) => { listeners.add(f); return () => listeners.delete(f); } };
+module.exports = { start, tick, cancel, retry, setQuality, status: () => lastStatus, onStatus: (f) => { listeners.add(f); return () => listeners.delete(f); } };
