@@ -68,6 +68,7 @@ class LenticularRenderer(private val context: Context) : GLSurfaceView.Renderer 
 
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
         GLES30.glClearColor(0f, 0f, 0f, 1f)
+        swapInterval = -1
         quiltProgram = GlUtil.program(context, "shaders/lenticular.vert", "shaders/quilt_lenticular.frag")
         rgbdProgram = GlUtil.program(context, "shaders/lenticular.vert", "shaders/rgbd_lenticular.frag")
         blitProgram = GlUtil.link(BLIT_VERT, BLIT_FRAG)
@@ -104,7 +105,19 @@ class LenticularRenderer(private val context: Context) : GLSurfaceView.Renderer 
     private var passes = 0
     private var fpsSince = 0L
 
+    /**
+     * Cool mode: refresh the Go every other vsync (30 times a second), so the 3D is drawn at most
+     * 30 times a second too. A 60 fps video then shows every other frame; the phone runs cooler.
+     */
+    @Volatile var cool = false
+    private var swapInterval = -1        // what the current GL context was last set to
+
     override fun onDrawFrame(gl: GL10?) {
+        val wantSwap = if (cool) 2 else 1
+        if (wantSwap != swapInterval) {
+            android.opengl.EGL14.eglSwapInterval(android.opengl.EGL14.eglGetCurrentDisplay(), wantSwap)
+            swapInterval = wantSwap
+        }
         val itemChanged = applyPendingItem()
         val item = currentItem
         val tex = texture

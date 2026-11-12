@@ -30,6 +30,14 @@ class LoopPrefs(context: Context) {
     var autoStart: Boolean
         get() = p.getBoolean("autoStart", false)
         set(v) = p.edit().putBoolean("autoStart", v).apply()
+    /** Cool mode: refresh the Go 30 times a second instead of 60, so the phone runs cooler. */
+    var coolMode: Boolean
+        get() = p.getBoolean("coolMode", false)
+        set(v) = p.edit().putBoolean("coolMode", v).apply()
+    /** Root of the flash drive the videos live on (its /storage path), or "" for the phone. */
+    var storageRoot: String
+        get() = p.getString("storageRoot", "") ?: ""
+        set(v) = p.edit().putString("storageRoot", v).apply()
     var currentKey: String
         get() = p.getString("currentKey", "") ?: ""
         set(v) = p.edit().putString("currentKey", v).apply()

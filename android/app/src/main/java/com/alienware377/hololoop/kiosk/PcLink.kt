@@ -17,6 +17,8 @@ import java.util.concurrent.TimeUnit
 /** Videos the PC stops listing stay on the phone this long before they are deleted. */
 private const val PRUNE_AFTER_MS = 3L * 24 * 3600 * 1000
 
+private const val FAT32_FULL = "%s is over 4 GB, which a FAT32 flash drive can't hold. Format the drive as exFAT."
+
 /** One finished 3D video (or still) as the PC lists it. */
 data class LoopItem(
     val id: String, val key: String, val name: String, val kind: String, val still: Boolean,
@@ -56,14 +58,52 @@ data class LoopItem(
 /** Talks to HoloLoop on the PC: find it, log in with the PIN, fetch new 3D files. */
 class PcLink(private val context: Context, private val prefs: LoopPrefs) {
 
-    val dir: File = File(context.getExternalFilesDir(null), "hololoop").apply { mkdirs() }
+    /** The phone's own video folder. */
+    val phoneDir: File = File(context.getExternalFilesDir(null), "hololoop").apply { mkdirs() }
 
-    fun localFile(it: LoopItem) = File(dir, safe(it.key) + "_" + safe(it.file))
+    /** The HoloLoop folder on the picked flash drive, or null when the videos live on the phone. */
+    fun driveDir(): File? = prefs.storageRoot.takeIf { it.isNotEmpty() }?.let { File(it, "HoloLoop") }
+
+    private fun usable(d: File) = (d.isDirectory || d.mkdirs()) && d.canWrite()
+
+    /** A drive is picked but can't be used right now (unplugged, or all-files access was taken away). */
+    fun driveMissing() = driveDir()?.let { !usable(it) } ?: false
+
+    /** Where new downloads go; null while the picked drive is missing, so the phone doesn't fill up instead. */
+    fun downloadDir(): File? {
+        val d = driveDir() ?: return phoneDir
+        return if (usable(d)) d else null
+    }
+
+    /** Every folder that may hold videos: the drive first, then the phone (videos kept from before the switch). */
+    fun dirs(): List<File> = listOfNotNull(driveDir()?.takeIf { usable(it) }, phoneDir)
+
+    /** The finished file wherever it is, else the place it would be downloaded to. */
+    fun localFile(it: LoopItem): File {
+        val name = safe(it.key) + "_" + safe(it.file)
+        for (d in dirs()) File(d, name).let { f -> if (f.exists() && (it.size <= 0 || f.length() == it.size)) return f }
+        return File(downloadDir() ?: phoneDir, name)
+    }
     /** Downloaded completely: there and the size the PC says (a kept old file of the same name is not ready). */
     fun isReady(it: LoopItem) = localFile(it).let { f -> f.exists() && (it.size <= 0 || f.length() == it.size) }
     private fun safe(s: String) = s.replace(Regex("[^A-Za-z0-9._-]"), "_").take(90)
 
     class HttpError(val code: Int, msg: String) : Exception(msg)
+    /** No room, no drive, or a drive that can't hold the file; the message is for people. */
+    class StorageError(msg: String) : Exception(msg)
+
+    /**
+     * The file system of the drive a path is on. /storage/<id> itself is a FUSE layer, so look for
+     * the real mount of the same volume id (e.g. /mnt/media_rw/<id>) first.
+     */
+    private fun fsType(f: File): String? = runCatching {
+        val mounts = File("/proc/self/mounts").readLines().map { it.split(' ') }.filter { it.size > 2 }
+        val id = f.path.removePrefix("/storage/").substringBefore('/')
+        mounts.firstOrNull { it[1].endsWith("/$id") && it[2] != "fuse" }?.get(2)
+            ?: mounts.filter { f.path.startsWith(it[1]) }.maxByOrNull { it[1].length }?.get(2)
+    }.getOrNull()
+
+    private fun fat32(f: File) = fsType(f)?.let { it == "vfat" || it == "msdos" || it == "fat" } == true
 
     /**
      * The home Wi-Fi (or a wired hub's Ethernet) with its IPv4 address. We pin
@@ -155,8 +195,9 @@ class PcLink(private val context: Context, private val prefs: LoopPrefs) {
 
     /** Download (or finish downloading) one file. Resumes from a .part file. */
     fun download(it: LoopItem, onProgress: (Long, Long) -> Unit, cancelled: () -> Boolean): File {
-        val out = localFile(it)
-        if (out.exists() && out.length() == it.size) return out
+        localFile(it).let { f -> if (f.exists() && f.length() == it.size) return f }
+        val target = downloadDir() ?: throw StorageError("The flash drive isn't plugged in. Plug it back in, or pick This phone under Video storage.")
+        val out = File(target, localFile(it).name)
         val part = File(out.path + ".part")
         // which file the .part holds: a half-fetched big original must not be finished with its small copy's bytes
         val partFor = File(part.path + ".for")
@@ -165,6 +206,10 @@ class PcLink(private val context: Context, private val prefs: LoopPrefs) {
         partFor.writeText(want)
         var have = if (part.exists()) part.length() else 0L
         if (have > it.size) { part.delete(); have = 0 }
+        if (target != phoneDir && it.size >= (4L shl 30) && fat32(target)) throw StorageError(FAT32_FULL.format(it.name))
+        if (target.usableSpace < it.size - have + (256L shl 20))
+            throw StorageError("Not enough room for ${it.name} on the ${if (target == phoneDir) "phone" else "flash drive"} " +
+                "(${(it.size - have) shr 20} MB needed, ${target.usableSpace shr 20} MB free).")
         if (have == it.size && have > 0) {           // finished last time, only the rename was missing
             if (out.exists()) out.delete()
             if (part.renameTo(out)) { partFor.delete(); onProgress(have, it.size); return out }
@@ -187,7 +232,11 @@ class PcLink(private val context: Context, private val prefs: LoopPrefs) {
                 while (true) {
                     if (cancelled()) throw InterruptedException("cancelled")
                     val n = input.read(buf); if (n < 0) break
-                    raf.write(buf, 0, n); have += n
+                    try { raf.write(buf, 0, n) } catch (e: java.io.IOException) {
+                        if (target != phoneDir && have + n >= (4L shl 30) - 1) throw StorageError(FAT32_FULL.format(it.name))
+                        throw e
+                    }
+                    have += n
                     val now = System.currentTimeMillis()
                     if (now - last > 500) { last = now; onProgress(have, it.size) }
                 }
@@ -207,11 +256,13 @@ class PcLink(private val context: Context, private val prefs: LoopPrefs) {
      * once: the phone is often full, and the new one needs the room. A half-fetched big file the
      * PC now says not to fetch (a copy is coming) goes too.
      */
-    fun dropReplaced(items: List<LoopItem>): Long {
+    fun dropReplaced(items: List<LoopItem>): Long = dirs().sumOf { dropReplaced(it, items) }
+
+    private fun dropReplaced(dir: File, items: List<LoopItem>): Long {
         var freed = 0L
         val files = dir.listFiles() ?: return 0
         for (it in items) {
-            val mine = localFile(it).name
+            val mine = safe(it.key) + "_" + safe(it.file)
             val prefix = safe(it.key) + "_"
             for (f in files) {
                 val n = f.name
@@ -232,8 +283,10 @@ class PcLink(private val context: Context, private val prefs: LoopPrefs) {
      * video for a while) must not make the phone throw away gigabytes it would then
      * download again. Unfinished downloads of dropped videos go at once.
      */
-    fun prune(keep: List<LoopItem>) {
-        val names = keep.map { localFile(it).name }.toSet()
+    fun prune(keep: List<LoopItem>) = dirs().forEach { prune(it, keep) }
+
+    private fun prune(dir: File, keep: List<LoopItem>) {
+        val names = keep.map { safe(it.key) + "_" + safe(it.file) }.toSet()
         val book = File(dir, ".dropped.json")
         val since = runCatching { org.json.JSONObject(book.readText()) }.getOrDefault(org.json.JSONObject())
         val now = System.currentTimeMillis()

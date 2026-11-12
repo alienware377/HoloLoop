@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The Looking Glass Go as the phone sees it over USB, so Android offers to open
+     HoloLoop when it is plugged in. -->
+<resources>
+    <!-- control interface (its buttons): VID 0x05df, PID 0x16c0 -->
+    <usb-device vendor-id="1503" product-id="5824" />
+    <!-- storage / upload interface: VID 0x1d6b, PID 0x0104 -->
+    <usb-device vendor-id="7531" product-id="260" />
+</resources>

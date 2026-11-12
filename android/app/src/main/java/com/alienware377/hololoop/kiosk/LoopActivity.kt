@@ -1,12 +1,18 @@
 package com.alienware377.hololoop.kiosk
 
 import android.app.TimePickerDialog
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.hardware.display.DisplayManager
 import android.media.session.MediaSession
 import android.media.session.PlaybackState
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.os.Environment
+import android.os.storage.StorageManager
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -21,11 +27,15 @@ import android.widget.ImageView
 import android.widget.TextView
 import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.chip.Chip
 import com.google.android.material.chip.ChipGroup
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.materialswitch.MaterialSwitch
 import com.google.android.material.progressindicator.LinearProgressIndicator
 import com.google.android.material.slider.Slider
@@ -108,6 +118,11 @@ class LoopActivity : AppCompatActivity(), PlaybackEvents, GoMenu.Host, FxPanel.H
         super.onCreate(savedInstanceState)
         installRestartOnCrash()
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        // When the phone locks while the Go is playing, the Go keeps the phone awake and the lock
+        // screen's clock would sit on the phone's screen for hours. Show HoloLoop over it instead,
+        // so its black screen takes over (the phone stays locked for everything else).
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) setShowWhenLocked(true)
+        else @Suppress("DEPRECATION") window.addFlags(WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED)
         setContentView(R.layout.activity_loop)
         prefs = LoopPrefs(this)
         prefs.migrate()
@@ -152,11 +167,30 @@ class LoopActivity : AppCompatActivity(), PlaybackEvents, GoMenu.Host, FxPanel.H
 
     override fun onResume() {
         super.onResume()
+        hideSystemBars()
+        showStorage()
         findViewById<MaterialSwitch>(R.id.autoStartSwitch)?.isChecked = prefs.autoStart && Settings.canDrawOverlays(this)
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) hideSystemBars()       // back from a dialog, the keyboard or a swiped-in bar
+    }
+
+    /**
+     * Full screen while HoloLoop is in front: the phone sits on for days, and a status bar that
+     * never moves burns into its screen. A swipe from the edge shows the bars for a moment.
+     */
+    private fun hideSystemBars() {
+        WindowCompat.getInsetsController(window, window.decorView).apply {
+            systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            hide(WindowInsetsCompat.Type.systemBars())
+        }
     }
 
     override fun onDestroy() {
         main.removeCallbacksAndMessages(null)
+        runCatching { unregisterReceiver(driveReceiver) }
         mediaSession?.release(); mediaSession = null
         displayListener?.let { ExternalDisplays.manager(this).unregisterDisplayListener(it) }
         presentation?.dismiss(); presentation = null
@@ -380,6 +414,7 @@ class LoopActivity : AppCompatActivity(), PlaybackEvents, GoMenu.Host, FxPanel.H
         p?.dismiss()
         presentation = HologramPresentation(this, display, cal, null).also {
             it.look = prefs.look
+            it.cool = prefs.coolMode
             it.events = this
             it.keys = ::goKey
             it.fx = fx
@@ -512,6 +547,8 @@ class LoopActivity : AppCompatActivity(), PlaybackEvents, GoMenu.Host, FxPanel.H
                 prefs.playlistJson = LoopItem.listJson(list.items)
                 pc.dropReplaced(list.items)
                 main.post { items = list.items.filter { x -> pc.isReady(x) } }
+                if (pc.driveMissing()) throw PcLink.StorageError(if (!fileAccess()) needsAccessText
+                    else "The flash drive isn't plugged in. Plug it back in, or pick This phone under Video storage.")
                 var done = 0
                 for (it in list.items) {
                     if (it.waitCopy && !pc.isReady(it)) { done++; continue }     // a smaller copy is on its way
@@ -531,6 +568,9 @@ class LoopActivity : AppCompatActivity(), PlaybackEvents, GoMenu.Host, FxPanel.H
                 syncText = "Up to date: ${ready.size} video${if (ready.size == 1) "" else "s"}" +
                     (if (coming > 0) ", $coming more once the PC has made smaller copies" else "") + ". Checks again every 10 minutes."
                 syncOkAt = System.currentTimeMillis(); syncErr = null; syncErrCode = 0
+            } catch (e: PcLink.StorageError) {
+                syncText = e.message ?: "Storage problem"
+                syncErr = syncText; syncErrCode = STORAGE_ERR
             } catch (e: PcLink.HttpError) {
                 syncText = if (e.code == 401) "The PC wants the PIN again." else "Couldn't reach the PC: ${e.message}"
                 syncErr = syncText; syncErrCode = e.code
@@ -541,6 +581,73 @@ class LoopActivity : AppCompatActivity(), PlaybackEvents, GoMenu.Host, FxPanel.H
                 Log.w(TAG, "sync", e)
             } finally { syncing = false }
         }
+    }
+
+    // ------------------------------------------------------------------ video storage
+    /** syncErrCode for a storage problem (no drive, no room, no file access) rather than a PC one. */
+    private val STORAGE_ERR = -1
+    private val needsAccessText = "HoloLoop needs file access to use the flash drive. Tap Video storage to allow it."
+
+    /** A flash drive came or went: replay what is there now and fetch what is missing. */
+    private val driveReceiver = object : BroadcastReceiver() {
+        override fun onReceive(c: Context, i: Intent) {
+            main.postDelayed({
+                showStorage()
+                items = LoopItem.listFrom(prefs.playlistJson).filter { pc.isReady(it) }
+                current?.let { cur -> if (items.none { it.key == cur.key }) playNext() }
+                lastSyncAt = 0; syncNow()
+            }, 1500)
+        }
+    }
+
+    /** Flash drives are only reachable with all-files access (Android 11 and newer). */
+    private fun fileAccess() = Build.VERSION.SDK_INT < Build.VERSION_CODES.R || Environment.isExternalStorageManager()
+
+    private fun gb(bytes: Long) = if (bytes >= 10L shl 30) "${bytes shr 30} GB" else "%.1f GB".format(bytes / 1073741824.0)
+
+    private fun showStorage() {
+        val b = findViewById<MaterialButton>(R.id.storageBtn) ?: return
+        val d = pc.driveDir()
+        b.text = when {
+            d == null -> "Video storage: this phone (${gb(pc.phoneDir.usableSpace)} free)"
+            pc.driveMissing() -> if (!fileAccess()) "Video storage: flash drive (tap to allow file access)" else "Video storage: flash drive (not plugged in)"
+            else -> "Video storage: flash drive (${gb(d.usableSpace)} free)"
+        }
+    }
+
+    /** Removable drives that are plugged in and readable, with their names. */
+    private fun drives(): List<Pair<String, File>> {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return emptyList()
+        val sm = getSystemService(StorageManager::class.java) ?: return emptyList()
+        return sm.storageVolumes.filter { it.isRemovable && it.state == Environment.MEDIA_MOUNTED }
+            .mapNotNull { v -> v.directory?.let { v.getDescription(this) to it } }
+    }
+
+    private fun pickStorage() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) { note("Flash drives need Android 11 or newer.", 8_000); return }
+        if (!fileAccess()) {
+            note("Allow HoloLoop to manage all files, then tap Video storage again.", 20_000)
+            runCatching { startActivity(Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.parse("package:$packageName"))) }
+                .onFailure { startActivity(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)) }
+            return
+        }
+        val found = drives()
+        val names = listOf("This phone (${gb(pc.phoneDir.usableSpace)} free)") + found.map { (name, dir) -> "$name (${gb(dir.usableSpace)} free)" }
+        val roots = listOf("") + found.map { it.second.path }
+        val cur = roots.indexOf(prefs.storageRoot).coerceAtLeast(0)
+        MaterialAlertDialogBuilder(this)
+            .setTitle(if (found.isEmpty()) "No flash drive found" else "Keep the videos on")
+            .setSingleChoiceItems(names.toTypedArray(), cur) { dlg, which ->
+                dlg.dismiss()
+                if (roots[which] == prefs.storageRoot) return@setSingleChoiceItems
+                prefs.storageRoot = roots[which]
+                showStorage()
+                note(if (roots[which].isEmpty()) "New videos now download to the phone."
+                    else "New videos now download to the flash drive. Videos already on the phone keep playing.", 12_000)
+                lastSyncAt = 0; syncNow()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
     /** The PC knows the Go's calibration; keep a copy so a new phone works at once. */
@@ -585,6 +692,13 @@ class LoopActivity : AppCompatActivity(), PlaybackEvents, GoMenu.Host, FxPanel.H
             if (asleep) SleepSchedule.wakeNow(s) else SleepSchedule.sleepNow(s)
             setAsleep(SleepSchedule.asleep(s)); render()
         }
+        findViewById<MaterialButton>(R.id.storageBtn).setOnClickListener { pickStorage() }
+        showStorage()
+        registerReceiver(driveReceiver, IntentFilter().apply {
+            addAction(Intent.ACTION_MEDIA_MOUNTED); addAction(Intent.ACTION_MEDIA_UNMOUNTED)
+            addAction(Intent.ACTION_MEDIA_EJECT); addAction(Intent.ACTION_MEDIA_REMOVED)
+            addDataScheme("file")
+        })
         findViewById<MaterialButton>(R.id.syncBtn).setOnClickListener {
             if (!isLinked()) { note("Link your PC first (Your PC, below).", 8_000); for (o in sections) setOpen(o, o === sections.firstOrNull()); return@setOnClickListener }
             lastSyncAt = 0; syncNow()
@@ -661,6 +775,10 @@ class LoopActivity : AppCompatActivity(), PlaybackEvents, GoMenu.Host, FxPanel.H
         fun showMove() { moveBtn.text = "Steady moving things: " + moveModes[prefs.look.steadyMove.coerceIn(0, moveModes.size - 1)] }
         moveBtn.setOnClickListener { pushLook { it.copy(steadyMove = (prefs.look.steadyMove + 1) % moveModes.size) }; showMove() }
         showMove()
+        val coolBtn = findViewById<MaterialButton>(R.id.coolBtn)
+        fun showCool() { coolBtn.text = if (prefs.coolMode) "Cool mode: on (30 frames a second, runs cooler)" else "Cool mode: off (60 frames a second)" }
+        coolBtn.setOnClickListener { prefs.coolMode = !prefs.coolMode; presentation?.cool = prefs.coolMode; showCool() }
+        showCool()
         showLook()
         lookEditor = { pushLook(it) }
         refreshLookUi = { showLook(); showEdge(); showSteady(); showMove(); render() }
@@ -890,7 +1008,11 @@ class LoopActivity : AppCompatActivity(), PlaybackEvents, GoMenu.Host, FxPanel.H
                 items.isNotEmpty() -> ""
                 !linked -> "Link your PC below to get videos"
                 syncing -> "Getting videos from the PC..."
-                err != null -> if (syncErrCode == 401) "The PC wants its PIN again" else "Can't reach the PC right now"
+                err != null -> when (syncErrCode) {
+                    401 -> "The PC wants its PIN again"
+                    STORAGE_ERR -> if (!fileAccess()) "HoloLoop needs file access" else if (pc.driveMissing()) "The flash drive isn't plugged in" else "Not enough room for videos"
+                    else -> "Can't reach the PC right now"
+                }
                 syncOkAt > 0 -> "No 3D videos on the PC yet"
                 else -> "Can't reach the PC right now"
             }
@@ -933,6 +1055,7 @@ class LoopActivity : AppCompatActivity(), PlaybackEvents, GoMenu.Host, FxPanel.H
             !linked -> "Not linked yet"
             syncing -> "Linked, getting videos"
             err != null && syncErrCode == 401 -> "PIN needed again"
+            err != null && syncErrCode == STORAGE_ERR -> "Linked, but videos can't be saved right now"
             err != null -> "Can't reach the PC right now"
             syncOkAt > 0 -> "Linked, ${items.size} video${if (items.size == 1) "" else "s"}, last check ${ago(syncOkAt)}"
             else -> "Linked to ${prefs.pcBase}"

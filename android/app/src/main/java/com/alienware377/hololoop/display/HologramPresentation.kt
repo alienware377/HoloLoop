@@ -37,6 +37,9 @@ class HologramPresentation(
         set(v) { field = v; if (::renderer.isInitialized) renderer.events = v }
     var fx: FxState? = null
         set(v) { field = v; if (::renderer.isInitialized) renderer.fx = v }
+    /** Cool mode (see LenticularRenderer.cool). Set any time. */
+    var cool: Boolean = false
+        set(v) { field = v; if (::renderer.isInitialized) renderer.cool = v }
     /** Drawn flat on top of the 3D (the on-Go menu). Set before show(). */
     var overlay: View? = null
     /** Key presses that land on the Go's window (its buttons, if focus is here). */
@@ -47,7 +50,7 @@ class HologramPresentation(
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        renderer = LenticularRenderer(context).also { it.calibration = calibration; it.look = look; it.events = events; it.fx = fx }
+        renderer = LenticularRenderer(context).also { it.calibration = calibration; it.look = look; it.events = events; it.fx = fx; it.cool = cool }
         glView = GLSurfaceView(context).apply {
             setEGLContextClientVersion(3)
             setRenderer(renderer)
