@@ -74,7 +74,8 @@ class VideoTexture(
     private var rowsTex = 0
     private var rowsProgram = 0
     private var rowsOk = false
-    override val depthTex: Int get() = if (steadyOn && outTex != 0 && outTex != tex2d) stabDepth else blitDepth
+    private var blitDepthFresh = false    // blitDepth holds the current frame (it is skipped while steady makes its own)
+    override val depthTex: Int get() = if (steadyOn && outTex != 0 && outTex != tex2d) stabDepth else if (blitDepthFresh) blitDepth else 0
     @Volatile private var restartSteady = false
     private val stMatrix = FloatArray(16)
     @Volatile private var frameAvailable = false
@@ -157,7 +158,7 @@ class VideoTexture(
                 .build()
             val p = ExoPlayer.Builder(context, CappedRenderers(context) { maxFps })
                 .setLoadControl(load)
-                .experimentalSetDynamicSchedulingEnabled(true)   // wake the playback thread only when there is work
+                .experimentalSetDynamicSchedulingEnabled(true)   // lets the playback thread sleep longer where the renderers allow it
                 .build()
             player = p
             p.setVideoSurface(surface)
@@ -219,15 +220,15 @@ class VideoTexture(
             return false
         }
         st.getTransformMatrix(stMatrix)
-        blitToTex2d()
-        steadyPass()
+        val level = steady
+        val move = steadyMove
+        blitToTex2d(withDepth = level <= 0 && move <= 0)
+        steadyPass(level, move)
         return true
     }
 
     /** Smooth the depth between frames, more where the picture is still (see steady.frag). */
-    private fun steadyPass() {
-        val level = steady
-        val move = steadyMove
+    private fun steadyPass(level: Int, move: Int) {
         if (level <= 0 && move <= 0) { outTex = tex2d; stabFresh = true; return }
         if (restartSteady) { restartSteady = false; stabFresh = true }
         val t = mediaTimeSec()
@@ -312,14 +313,15 @@ class VideoTexture(
         stabI = 1 - stabI; outTex = dst; stabFresh = false
     }
 
-    private fun blitToTex2d() {
+    private fun blitToTex2d(withDepth: Boolean) {
         val prevFbo = IntArray(1)
         GLES30.glGetIntegerv(GLES30.GL_FRAMEBUFFER_BINDING, prevFbo, 0)
         val vp = IntArray(4)
         GLES30.glGetIntegerv(GLES30.GL_VIEWPORT, vp, 0)
 
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fbo)
-        attach(tex2d, blitDepth)
+        attach(tex2d, if (withDepth) blitDepth else 0)
+        blitDepthFresh = withDepth
         GLES30.glViewport(0, 0, width, height)
         GLES30.glUseProgram(blitProgram)
         GlUtil.bindQuadAttrib(blitProgram, quadVbo)
