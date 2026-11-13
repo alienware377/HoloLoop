@@ -31,6 +31,21 @@ class GoMenu(context: Context, private val host: Host) : View(context) {
         /** True when the phone uses its own 3D settings, false when it follows the PC's. */
         val ownLook: Boolean
         fun setOwnLook(on: Boolean)
+        /** Lens correction (this phone only): alignment -100..100, 3D boost 100..400 %, reversed views. */
+        var lensAlign: Int
+        var lensBoost: Int
+        var lensFlip: Boolean
+        /** Cool mode: on or off, and how many times a second it draws the Go (12..45). */
+        var coolMode: Boolean
+        var coolFps: Int
+        var shuffle: Boolean
+        var soundOn: Boolean
+        /** 0..100 */
+        var volume: Int
+        /** How much of the 3D shows through this menu's background, 0..90 %. */
+        var menuSeeThrough: Int
+        /** Puts the Go to sleep until any button is pressed. */
+        fun sleepNow()
         /** Some input reached the menu (to restart its close timer). */
         fun touched()
         fun closed()
@@ -58,8 +73,8 @@ class GoMenu(context: Context, private val host: Host) : View(context) {
         override fun pick() { stack += Spot(page()); editing = false }
     }
 
-    /** A number or a list of choices: [get] and [set] it, [text] shows it. */
-    private class Adjust(val min: Int, val max: Int, val isChoice: Boolean, val get: () -> Int, val set: (Int) -> Unit, val text: (Int) -> String)
+    /** A number or a list of choices: [get] and [set] it, [text] shows it. [step] 0 picks one from the range. */
+    private class Adjust(val min: Int, val max: Int, val isChoice: Boolean, val get: () -> Int, val set: (Int) -> Unit, val text: (Int) -> String, val step: Int = 0)
 
     private inner class ValueRow(override val label: String, override val help: String?, override val adjust: Adjust) : Row() {
         override fun value() = adjust.text(adjust.get())
@@ -87,7 +102,41 @@ class GoMenu(context: Context, private val host: Host) : View(context) {
     private fun mainPage() = Page("Menu") {
         listOf(PageRow("3D settings", { if (host.ownLook) "this phone's" else "from the PC" }, null) { lookPage() },
             PageRow("Filters", { if (host.fx.on) "On" else "Off" }, null) { filtersPage() },
+            PageRow("Cool mode", { if (host.coolMode) "${host.coolFps} fps" else "Off" }, "Draws the Go fewer times a second, so the phone runs cooler.") { coolPage() },
+            PageRow("Playback", { if (host.shuffle) "Shuffle" else "In order" }, null) { playbackPage() },
+            PageRow("Lens", { if (host.lensAlign == 0 && host.lensBoost == 100 && !host.lensFlip) "Off" else "On" }, "For a magnifying lens in front of the Go.") { lensPage() },
+            ValueRow("Menu see-through", "How much of the 3D shows through behind this menu.",
+                Adjust(0, 90, false, { host.menuSeeThrough }, { host.menuSeeThrough = it }, { "$it%" }, step = 5)),
+            ActionRow("Sleep now") { host.sleepNow() },
             ActionRow("Close menu") { close() })
+    }
+
+    private fun coolPage() = Page("Cool mode") {
+        listOf<Row>(
+            choiceRow("Cool mode", "Draws the Go fewer times a second, so the phone runs cooler. Faster videos skip frames.",
+                listOf("Off", "On"), { if (host.coolMode) 1 else 0 }, { host.coolMode = it == 1 }),
+            ValueRow("Frames a second", "Lower runs cooler, higher moves smoother. Off draws 60.",
+                Adjust(12, 45, false, { host.coolFps }, { host.coolFps = it; host.coolMode = true }, { "$it fps" }, step = 1)),
+        ) + endRows()
+    }
+
+    private fun playbackPage() = Page("Playback") {
+        listOf<Row>(
+            choiceRow("Order", null, listOf("In order", "Shuffle"), { if (host.shuffle) 1 else 0 }, { host.shuffle = it == 1 }),
+            choiceRow("Sound", null, listOf("Off", "On"), { if (host.soundOn) 1 else 0 }, { host.soundOn = it == 1 }),
+            ValueRow("Volume", null, Adjust(0, 100, false, { host.volume }, { host.volume = it }, { "$it%" }, step = 5)),
+        ) + endRows()
+    }
+
+    private fun lensPage() = Page("Lens") {
+        listOf<Row>(
+            ValueRow("Lens alignment", "Show the view-number test, look with one eye, and change it until the number is the same across the screen.",
+                Adjust(-100, 100, false, { host.lensAlign }, { host.lensAlign = it }, { if (it == 0) "0" else "%+d".format(it) })),
+            ValueRow("Lens 3D boost", "A lens leaves fewer views between your eyes, so the 3D looks flatter. This makes up for it.",
+                Adjust(10, 40, false, { host.lensBoost / 10 }, { host.lensBoost = it * 10 }, { "${it * 10}%" })),
+            choiceRow("Lens reverses views", "Turn on if the 3D looks inside-out through the lens (your eyes are past its focal point).",
+                listOf("Off", "On"), { if (host.lensFlip) 1 else 0 }, { host.lensFlip = it == 1 }),
+        ) + endRows()
     }
 
     private fun lookPage() = Page("3D settings") {
@@ -163,7 +212,12 @@ class GoMenu(context: Context, private val host: Host) : View(context) {
                 val n = f.max - f.min + 1
                 f.min + ((cur - f.min + dir) % n + n) % n
             } else {
-                val step = if (f.max - f.min <= 10) 1 else if (repeat > 12) 10 else 5
+                val step = when {
+                    f.step > 0 -> if (repeat > 12) f.step * 5 else f.step
+                    f.max - f.min <= 10 -> 1
+                    repeat > 12 -> 10
+                    else -> 5
+                }
                 (cur + dir * step).coerceIn(f.min, f.max)
             }
             if (next != cur) f.set(next)
@@ -237,6 +291,7 @@ class GoMenu(context: Context, private val host: Host) : View(context) {
         val right = w - pad
         val topY = ((h - panelH) / 2f).coerceAtLeast(pad)
         r.set(left, topY, right, topY + panelH)
+        panel.alpha = (250 * (100 - host.menuSeeThrough.coerceIn(0, 90)) / 100)
         c.drawRoundRect(r, pad, pad, panel)
 
         var y = topY + pad

@@ -20,7 +20,7 @@ Not made by or affiliated with Looking Glass Factory.
 4. **Phone:** install `HoloLoop.apk`, open it and link it to the PC with the address and PIN the PC shows under *Phone*.
 5. Plug the phone into the Go through the adapter. Playback starts on the Go.
 
-The Go's own buttons work: back and next change video (hold to skip through it), play pauses. Press play twice quickly for a filter menu on the Go itself; the same filters are under *Filters* on the phone.
+The Go's own buttons work: back and next change video (hold to skip through it), play pauses. Press play twice quickly for a menu on the Go itself: 3D settings, filters, cool mode, playback, lens correction and sleep. Most of it is on the phone too.
 
 ## Building
 
@@ -40,7 +40,7 @@ npm start
 
 - **Conversion:** Depth Anything V2 Small (or Distill-Any-Depth Small or Base, chosen per video) runs on onnxruntime with DirectML, 60-second chunks at a time, so a conversion can stop and resume. The output is a side-by-side video (colour left, depth right). Faces and poses (YuNet, RTMO) decide the framing and whether a sideways video should be turned upright.
 - **Playback:** each subpixel of the Go's panel shows its own view, made straight from colour and depth by marching a ray through the depth map, so near things hide far ones. A short-term smoothing pass keeps edges from flickering when the depth changes frame to frame.
-- **Phone:** draws only when the video has a new frame, keeps up to a few seconds of video in memory, and restarts itself after a crash or reboot if allowed to draw over other apps.
+- **Phone:** draws the 3D only when the video has a new frame and stops drawing while the picture holds still, keeps up to a few seconds of video in memory, and restarts itself after a crash or reboot if allowed to draw over other apps.
 
 ## License
 

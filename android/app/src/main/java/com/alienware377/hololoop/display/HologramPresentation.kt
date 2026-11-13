@@ -3,6 +3,7 @@ package com.alienware377.hololoop.display
 import android.app.Presentation
 import android.content.Context
 import android.opengl.GLSurfaceView
+import android.view.Choreographer
 import android.os.Bundle
 import android.view.Display
 import android.view.KeyEvent
@@ -37,9 +38,47 @@ class HologramPresentation(
         set(v) { field = v; if (::renderer.isInitialized) renderer.events = v }
     var fx: FxState? = null
         set(v) { field = v; if (::renderer.isInitialized) renderer.fx = v }
-    /** Cool mode (see LenticularRenderer.cool). Set any time. */
-    var cool: Boolean = false
-        set(v) { field = v; if (::renderer.isInitialized) renderer.cool = v }
+    /**
+     * Cool mode: draw the Go only this many times a second (0 = every refresh, 60). The 3D is then
+     * drawn at most that often too; a faster video skips frames, and the phone runs cooler.
+     * Either way the Go is only drawn while its picture changes, so a paused video costs nothing.
+     */
+    var fpsCap: Int = 0
+        set(v) { field = v; if (::glView.isInitialized) applyFpsCap() }
+
+    private var lastPaced = 0L
+    private val pacer = object : Choreographer.FrameCallback {
+        override fun doFrame(frameTimeNanos: Long) {
+            if (!::glView.isInitialized) return
+            val cap = fpsCap
+            if (cap <= 0) {
+                if (renderer.needsDraw()) glView.requestRender()
+            } else {
+                val period = 1_000_000_000L / cap
+                // draw on the first refresh at or past the next due time (a little slack for timing jitter);
+                // due times step by exactly one period, so e.g. 45 a second draws 3 of every 4 refreshes
+                if (frameTimeNanos - lastPaced >= period - 1_500_000L) {
+                    lastPaced = if (frameTimeNanos - lastPaced > 2 * period) frameTimeNanos else lastPaced + period
+                    if (renderer.needsDraw()) glView.requestRender()
+                }
+            }
+            Choreographer.getInstance().postFrameCallback(this)
+        }
+    }
+
+    private fun applyFpsCap() {
+        Choreographer.getInstance().removeFrameCallback(pacer)
+        glView.renderMode = GLSurfaceView.RENDERMODE_WHEN_DIRTY
+        lastPaced = 0L
+        Choreographer.getInstance().postFrameCallback(pacer)
+    }
+    /** Lens correction (see LenticularRenderer.lensPitch). Set any time. */
+    var lensPitch: Float = 1f
+        set(v) { field = v; if (::renderer.isInitialized) renderer.lensPitch = v }
+    var lensDepth: Float = 1f
+        set(v) { field = v; if (::renderer.isInitialized) renderer.lensDepth = v }
+    var lensFlip: Boolean = false
+        set(v) { field = v; if (::renderer.isInitialized) renderer.lensFlip = v }
     /** Drawn flat on top of the 3D (the on-Go menu). Set before show(). */
     var overlay: View? = null
     /** Key presses that land on the Go's window (its buttons, if focus is here). */
@@ -50,12 +89,14 @@ class HologramPresentation(
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        renderer = LenticularRenderer(context).also { it.calibration = calibration; it.look = look; it.events = events; it.fx = fx; it.cool = cool }
+        renderer = LenticularRenderer(context).also { it.calibration = calibration; it.look = look; it.events = events; it.fx = fx
+            it.lensPitch = lensPitch; it.lensDepth = lensDepth; it.lensFlip = lensFlip }
         glView = GLSurfaceView(context).apply {
             setEGLContextClientVersion(3)
             setRenderer(renderer)
             renderMode = GLSurfaceView.RENDERMODE_CONTINUOUSLY
         }
+        applyFpsCap()
         val ov = overlay
         if (ov == null) setContentView(glView)
         else setContentView(FrameLayout(context).apply {
@@ -80,6 +121,7 @@ class HologramPresentation(
     }
 
     override fun onStop() {
+        Choreographer.getInstance().removeFrameCallback(pacer)
         if (::glView.isInitialized) {
             renderer.releasePlayerNow()                   // the decoder goes now, whatever the GL thread does
             glView.queueEvent { renderer.release() }      // GL objects (die with the context anyway)

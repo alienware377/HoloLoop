@@ -304,6 +304,52 @@ class LoopActivity : AppCompatActivity(), PlaybackEvents, GoMenu.Host, FxPanel.H
     override val look get() = prefs.look
     override fun editLook(edit: (com.alienware377.hololoop.model.Look) -> com.alienware377.hololoop.model.Look) { lookEditor(edit); refreshLookUi(); goMenu?.refresh() }
     override val ownLook get() = prefs.useLocalLook
+
+    // the Go menu's lens rows
+    override var lensAlign: Int
+        get() = prefs.lensAlign
+        set(v) { prefs.lensAlign = v; applyLens(); refreshLens() }
+    override var lensBoost: Int
+        get() = prefs.lensBoost
+        set(v) { prefs.lensBoost = v; applyLens(); refreshLens() }
+    override var lensFlip: Boolean
+        get() = prefs.lensFlip
+        set(v) { prefs.lensFlip = v; applyLens(); refreshLens() }
+
+    private var refreshLens: () -> Unit = {}
+
+    // the Go menu's cool mode, playback, menu and sleep rows
+    override var coolMode: Boolean
+        get() = prefs.coolMode
+        set(v) { prefs.coolMode = v; applyCool(); refreshCool() }
+    override var coolFps: Int
+        get() = prefs.coolFps
+        set(v) { prefs.coolFps = v; applyCool(); refreshCool() }
+    override var shuffle: Boolean
+        get() = prefs.shuffle
+        set(v) { prefs.shuffle = v; render() }
+    override var soundOn: Boolean
+        get() = !prefs.muted
+        set(v) { prefs.muted = !v; presentation?.setVolume(if (v) prefs.volume else 0f); refreshSound() }
+    override var volume: Int
+        get() = (prefs.volume * 100f + 0.5f).toInt()
+        set(v) { prefs.volume = v / 100f; if (!prefs.muted) presentation?.setVolume(prefs.volume); refreshSound() }
+    override var menuSeeThrough: Int
+        get() = prefs.menuSeeThrough
+        set(v) { prefs.menuSeeThrough = v }
+    override fun sleepNow() {
+        goMenu?.close()
+        wakeCache = null; SleepSchedule.sleepNow(prefs.sleep); setAsleep(SleepSchedule.asleep(prefs.sleep)); render()
+    }
+
+    private var refreshCool: () -> Unit = {}
+    private var refreshSound: () -> Unit = {}
+    private fun applyCool() { presentation?.fpsCap = if (prefs.coolMode) prefs.coolFps else 0 }
+    /** Alignment step: one hundredth of a percent of the lens pitch. */
+    private fun lensPitchOf(align: Int) = 1f + align * 0.0001f
+    private fun applyLens() {
+        presentation?.let { it.lensPitch = lensPitchOf(prefs.lensAlign); it.lensDepth = prefs.lensBoost / 100f; it.lensFlip = prefs.lensFlip }
+    }
     override fun setOwnLook(on: Boolean) {
         if (on && !prefs.useLocalLook) prefs.localLook = prefs.pcLook
         prefs.useLocalLook = on; presentation?.look = prefs.look; refreshLookUi(); goMenu?.refresh()
@@ -414,7 +460,8 @@ class LoopActivity : AppCompatActivity(), PlaybackEvents, GoMenu.Host, FxPanel.H
         p?.dismiss()
         presentation = HologramPresentation(this, display, cal, null).also {
             it.look = prefs.look
-            it.cool = prefs.coolMode
+            it.fpsCap = if (prefs.coolMode) prefs.coolFps else 0
+            it.lensPitch = lensPitchOf(prefs.lensAlign); it.lensDepth = prefs.lensBoost / 100f; it.lensFlip = prefs.lensFlip
             it.events = this
             it.keys = ::goKey
             it.fx = fx
@@ -683,7 +730,7 @@ class LoopActivity : AppCompatActivity(), PlaybackEvents, GoMenu.Host, FxPanel.H
         findViewById<MaterialButton>(R.id.nextBtn).setOnClickListener { goNext() }
         findViewById<MaterialButton>(R.id.prevBtn).setOnClickListener { goPrev() }
         playBtn.setOnClickListener { goPlayPause() }
-        findViewById<MaterialButton>(R.id.shuffleBtn).setOnClickListener { prefs.shuffle = !prefs.shuffle; render() }
+        findViewById<MaterialButton>(R.id.shuffleBtn).setOnClickListener { prefs.shuffle = !prefs.shuffle; render(); goMenu?.refresh() }
         bindPicker()
         bindFx()
         sleepBtn.setOnClickListener {
@@ -735,7 +782,8 @@ class LoopActivity : AppCompatActivity(), PlaybackEvents, GoMenu.Host, FxPanel.H
         val vol = findViewById<Slider>(R.id.volumeSlider)
         sound.isChecked = !prefs.muted; vol.value = prefs.volume.coerceIn(0f, 1f)
         sound.setOnCheckedChangeListener { _, on -> prefs.muted = !on; presentation?.setVolume(if (on) prefs.volume else 0f) }
-        vol.addOnChangeListener { _, v, fromUser -> if (fromUser) { prefs.volume = v; if (!prefs.muted) presentation?.setVolume(v) } }
+        vol.addOnChangeListener { _, v, fromUser -> if (fromUser) { prefs.volume = v; if (!prefs.muted) presentation?.setVolume(v); render() } }
+        refreshSound = { sound.isChecked = !prefs.muted; vol.value = prefs.volume.coerceIn(0f, 1f); render() }
 
         val localLook = findViewById<MaterialSwitch>(R.id.localLookSwitch)
         val depth = findViewById<Slider>(R.id.depthSlider)
@@ -776,9 +824,32 @@ class LoopActivity : AppCompatActivity(), PlaybackEvents, GoMenu.Host, FxPanel.H
         moveBtn.setOnClickListener { pushLook { it.copy(steadyMove = (prefs.look.steadyMove + 1) % moveModes.size) }; showMove() }
         showMove()
         val coolBtn = findViewById<MaterialButton>(R.id.coolBtn)
-        fun showCool() { coolBtn.text = if (prefs.coolMode) "Cool mode: on (30 frames a second, runs cooler)" else "Cool mode: off (60 frames a second)" }
-        coolBtn.setOnClickListener { prefs.coolMode = !prefs.coolMode; presentation?.cool = prefs.coolMode; showCool() }
+        val coolFps = findViewById<Slider>(R.id.coolFpsSlider)
+        fun showCool() {
+            coolBtn.text = if (prefs.coolMode) "Cool mode: on (${prefs.coolFps} frames a second, runs cooler)" else "Cool mode: off (60 frames a second)"
+            coolFps.value = prefs.coolFps.toFloat()
+            coolFps.visibility = if (prefs.coolMode) View.VISIBLE else View.GONE
+        }
+        coolBtn.setOnClickListener { prefs.coolMode = !prefs.coolMode; applyCool(); showCool(); goMenu?.refresh() }
+        coolFps.addOnChangeListener { _, v, fromUser -> if (fromUser) { prefs.coolFps = v.toInt(); applyCool(); showCool(); goMenu?.refresh() } }
         showCool()
+        refreshCool = { showCool() }
+        // lens correction, for a magnifying lens in front of the Go (this phone only)
+        val lensAlign = findViewById<Slider>(R.id.lensAlignSlider)
+        val lensBoost = findViewById<Slider>(R.id.lensBoostSlider)
+        val lensFlip = findViewById<MaterialSwitch>(R.id.lensFlipSwitch)
+        val lensAlignLabel = findViewById<TextView>(R.id.lensAlignLabel)
+        val lensBoostLabel = findViewById<TextView>(R.id.lensBoostLabel)
+        fun showLens() {
+            lensAlign.value = prefs.lensAlign.toFloat(); lensBoost.value = prefs.lensBoost.toFloat(); lensFlip.isChecked = prefs.lensFlip
+            lensAlignLabel.text = "Lens alignment: " + if (prefs.lensAlign == 0) "0 (no lens)" else "%+d".format(prefs.lensAlign)
+            lensBoostLabel.text = "Lens 3D boost: ${prefs.lensBoost}%"
+        }
+        lensAlign.addOnChangeListener { _, v, fromUser -> if (fromUser) { prefs.lensAlign = v.toInt(); applyLens(); showLens() } }
+        lensBoost.addOnChangeListener { _, v, fromUser -> if (fromUser) { prefs.lensBoost = v.toInt(); applyLens(); showLens() } }
+        lensFlip.setOnCheckedChangeListener { _, on -> if (on != prefs.lensFlip) { prefs.lensFlip = on; applyLens() } }
+        showLens()
+        refreshLens = { showLens() }
         showLook()
         lookEditor = { pushLook(it) }
         refreshLookUi = { showLook(); showEdge(); showSteady(); showMove(); render() }

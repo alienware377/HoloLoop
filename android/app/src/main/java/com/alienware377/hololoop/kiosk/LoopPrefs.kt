@@ -30,10 +30,29 @@ class LoopPrefs(context: Context) {
     var autoStart: Boolean
         get() = p.getBoolean("autoStart", false)
         set(v) = p.edit().putBoolean("autoStart", v).apply()
-    /** Cool mode: refresh the Go 30 times a second instead of 60, so the phone runs cooler. */
+    /** Cool mode: draw the Go only [coolFps] times a second instead of 60, so the phone runs cooler. */
     var coolMode: Boolean
         get() = p.getBoolean("coolMode", false)
         set(v) = p.edit().putBoolean("coolMode", v).apply()
+    var coolFps: Int
+        get() = p.getInt("coolFps", 30)
+        set(v) = p.edit().putInt("coolFps", v.coerceIn(12, 45)).apply()
+    /** How much of the 3D shows through the Go menu's background, in percent (0..90). */
+    var menuSeeThrough: Int
+        get() = p.getInt("menuSeeThrough", 10)
+        set(v) = p.edit().putInt("menuSeeThrough", v.coerceIn(0, 90)).apply()
+    /** Lens correction: alignment in hundredths of a percent of the lens pitch (-100..100). */
+    var lensAlign: Int
+        get() = p.getInt("lensAlign", 0)
+        set(v) = p.edit().putInt("lensAlign", v.coerceIn(-100, 100)).apply()
+    /** Lens correction: 3D strength multiplier in percent (100..400). */
+    var lensBoost: Int
+        get() = p.getInt("lensBoost", 100)
+        set(v) = p.edit().putInt("lensBoost", v.coerceIn(100, 400)).apply()
+    /** Lens correction: reverse the view order (seen from past the lens's focal point). */
+    var lensFlip: Boolean
+        get() = p.getBoolean("lensFlip", false)
+        set(v) = p.edit().putBoolean("lensFlip", v).apply()
     /** Root of the flash drive the videos live on (its /storage path), or "" for the phone. */
     var storageRoot: String
         get() = p.getString("storageRoot", "") ?: ""

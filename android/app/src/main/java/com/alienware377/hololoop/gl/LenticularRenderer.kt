@@ -23,11 +23,23 @@ import javax.microedition.khronos.opengles.GL10
 class LenticularRenderer(private val context: Context) : GLSurfaceView.Renderer {
 
     @Volatile var calibration: Calibration = Calibration.placeholder()
+        set(v) { field = v; poked = true }
     /** HoloLoop's 3D look. null = use the item's own depth values (studio behaviour). */
     @Volatile var look: Look? = null
+        set(v) { field = v; poked = true }
     @Volatile var events: PlaybackEvents? = null
     /** Video filters (HoloLoop), applied to the colour of RGBD pictures. null = none. */
     @Volatile var fx: FxState? = null
+        set(v) { field = v; poked = true }
+
+    // Once the picture has stopped changing (paused video, a still, asleep) there is no need to
+    // draw the Go again: it keeps showing the last frame. [needsDraw] says when that is over.
+    @Volatile private var poked = true
+    @Volatile private var idle = false
+    private var quietFrames = 0
+
+    /** False while the Go already shows everything there is to show. Safe to call from any thread. */
+    fun needsDraw(): Boolean = !idle || poked || pendingItem != null || clearRequested || texture?.hasNewFrame == true
     @Volatile private var pendingItem: HologramItem? = null
     @Volatile private var clearRequested = false
     private var loggedOnce = false
@@ -44,7 +56,7 @@ class LenticularRenderer(private val context: Context) : GLSurfaceView.Renderer 
     private var loggedFramingFor: HologramItem? = null
 
     /** Swap the displayed hologram; texture is (re)built on the GL thread. */
-    fun setItem(item: HologramItem?) { if (item == null) { pendingItem = null; clearRequested = true } else { clearRequested = false; pendingItem = item } }
+    fun setItem(item: HologramItem?) { if (item == null) { pendingItem = null; clearRequested = true } else { clearRequested = false; pendingItem = item }; poked = true }
 
     fun setPaused(paused: Boolean) { (texture as? VideoTexture)?.setPaused(paused) }
     fun setVolume(v: Float) { (texture as? VideoTexture)?.setVolume(v) }
@@ -68,7 +80,6 @@ class LenticularRenderer(private val context: Context) : GLSurfaceView.Renderer 
 
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
         GLES30.glClearColor(0f, 0f, 0f, 1f)
-        swapInterval = -1
         quiltProgram = GlUtil.program(context, "shaders/lenticular.vert", "shaders/quilt_lenticular.frag")
         rgbdProgram = GlUtil.program(context, "shaders/lenticular.vert", "shaders/rgbd_lenticular.frag")
         blitProgram = GlUtil.link(BLIT_VERT, BLIT_FRAG)
@@ -80,7 +91,7 @@ class LenticularRenderer(private val context: Context) : GLSurfaceView.Renderer 
     override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) {
         surfaceW = width; surfaceH = height
         GLES30.glViewport(0, 0, width, height)
-        cacheValid = false
+        cacheValid = false; idle = false; quietFrames = 0
     }
 
     private fun ensureCache() {
@@ -106,18 +117,21 @@ class LenticularRenderer(private val context: Context) : GLSurfaceView.Renderer 
     private var fpsSince = 0L
 
     /**
-     * Cool mode: refresh the Go every other vsync (30 times a second), so the 3D is drawn at most
-     * 30 times a second too. A 60 fps video then shows every other frame; the phone runs cooler.
+     * A magnifying lens in front of the Go bends the light, which acts like looking from another
+     * distance: the views drift across the picture, fewer of them land between the eyes, and past
+     * the lens's focal point their order flips. [lensPitch] rescales the lens pattern around the
+     * middle of the screen, [lensDepth] multiplies the 3D strength, [lensFlip] reverses the views.
      */
-    @Volatile var cool = false
-    private var swapInterval = -1        // what the current GL context was last set to
+    @Volatile var lensPitch = 1f
+        set(v) { field = v; poked = true }
+    @Volatile var lensDepth = 1f
+        set(v) { field = v; poked = true }
+    @Volatile var lensFlip = false
+        set(v) { field = v; poked = true }
+    private var drawnLens: Triple<Float, Float, Boolean>? = null
 
     override fun onDrawFrame(gl: GL10?) {
-        val wantSwap = if (cool) 2 else 1
-        if (wantSwap != swapInterval) {
-            android.opengl.EGL14.eglSwapInterval(android.opengl.EGL14.eglGetCurrentDisplay(), wantSwap)
-            swapInterval = wantSwap
-        }
+        poked = false                     // first, so a change made while drawing asks for one more frame
         val itemChanged = applyPendingItem()
         val item = currentItem
         val tex = texture
@@ -125,6 +139,7 @@ class LenticularRenderer(private val context: Context) : GLSurfaceView.Renderer 
             GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
             GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
             cacheValid = false
+            settle(itemChanged, false)
             return
         }
         val lk = look
@@ -149,14 +164,16 @@ class LenticularRenderer(private val context: Context) : GLSurfaceView.Renderer 
         val fxs = if (item.isRgbd) fx?.takeIf { it.active.isNotEmpty() } else null
         // moving filters (glitch, bokeh, grain) need fresh pictures even on a still frame, ~30 a second
         val animate = fxs?.animated == true && now - lastAnimNs > 30_000_000L
-        if (fresh || itemChanged || !cacheValid || lk != drawnLook || cal !== drawnCal || fxs != drawnFx || animate) {
+        val lens = Triple(lensPitch, lensDepth, lensFlip)
+        val redraw = fresh || itemChanged || !cacheValid || lk != drawnLook || cal !== drawnCal || fxs != drawnFx || animate || lens != drawnLens
+        if (redraw) {
             if (fxs?.animated == true) lastAnimNs = now
             val src = if (fxs != null) fxPass.apply(texId, tex.texW, tex.texH, item.depthLoc, fxs) else texId
             GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, cacheFbo)
             GLES30.glViewport(0, 0, surfaceW, surfaceH)
             GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
             drawHologram(item, tex, src, lk)
-            cacheValid = true; drawnLook = lk; drawnCal = cal; drawnFx = fxs; passes++
+            cacheValid = true; drawnLook = lk; drawnCal = cal; drawnFx = fxs; drawnLens = lens; passes++
         }
         // copy the finished picture to the screen, pixel for pixel
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
@@ -167,6 +184,13 @@ class LenticularRenderer(private val context: Context) : GLSurfaceView.Renderer 
         GLES30.glUniform1i(loc(blitProgram, "tex"), 0)
         GlUtil.bindQuadAttrib(blitProgram, quadVbo)
         GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4)
+        settle(redraw, fxs?.animated == true)
+    }
+
+    /** Count frames that showed nothing new; a few in a row (to fill every buffer) and the Go can rest. */
+    private fun settle(changed: Boolean, moving: Boolean) {
+        quietFrames = if (changed || moving) 0 else quietFrames + 1
+        idle = quietFrames >= 3
     }
 
     private fun drawHologram(item: HologramItem, tex: HologramTexture, texId: Int, lk: Look?) {
@@ -210,9 +234,11 @@ class LenticularRenderer(private val context: Context) : GLSurfaceView.Renderer 
         GLES30.glUniform2f(loc(program, "crop_pos"), 0f, 0f)
 
         // shared lenticular uniforms
-        uf(program, "pitch", calibration.shaderPitch)
+        val k = lensPitch
+        uf(program, "pitch", calibration.shaderPitch * k)
         uf(program, "slope", calibration.shaderSlope)
-        uf(program, "center", calibration.shaderCenter)
+        // keep the view at the middle of the screen where it was, so the rescale spreads both ways
+        uf(program, "center", calibration.shaderCenter + (k - 1f) * calibration.shaderPitch * (0.5f + 0.5f * calibration.shaderSlope))
         uf(program, "subpixelSize", calibration.shaderSubpixelSize)
         if (isRgbd) GLES30.glUniform4f(loc(program, "tile"), 11f, 6f, 0f, 0f)
         else GLES30.glUniform4f(loc(program, "tile"), item.cols.toFloat(), item.rows.toFloat(), 0f, 0f)
@@ -224,7 +250,7 @@ class LenticularRenderer(private val context: Context) : GLSurfaceView.Renderer 
         // backwards on the panel (in the view-number test the left eye sees the higher
         // number, and RGBD looks inside-out). So the view order is reversed exactly
         // when invView is NOT set.
-        val devInv = !calibration.invView
+        val devInv = !calibration.invView != lensFlip
         val invView = if (isRgbd) devInv else (devInv != item.depthInversion)
         GLES30.glUniform1i(loc(program, "invView"), if (invView) 1 else 0)
 
@@ -232,7 +258,7 @@ class LenticularRenderer(private val context: Context) : GLSurfaceView.Renderer 
             GLES30.glUniform1i(loc(program, "depth_loc"), item.depthLoc)
             val inv = item.depthInversion != (lk?.depthInvert == true)
             GLES30.glUniform1i(loc(program, "depth_inversion"), if (inv) 1 else 0)
-            uf(program, "depthiness", lk?.depthiness ?: item.depthiness)
+            uf(program, "depthiness", (lk?.depthiness ?: item.depthiness) * lensDepth)
             uf(program, "focus", lk?.focus ?: item.focus)
             GLES30.glUniform1i(loc(program, "iterations"), lk?.iterations ?: 14)
             GLES30.glUniform1i(loc(program, "edgeFix"), lk?.edgeFix ?: 0)

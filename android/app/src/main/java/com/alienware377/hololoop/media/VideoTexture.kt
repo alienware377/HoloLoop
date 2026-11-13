@@ -179,6 +179,8 @@ class VideoTexture(
         return tex2d
     }
 
+    override val hasNewFrame: Boolean get() = frameAvailable
+
     override fun update(): Boolean {
         val st = surfaceTexture ?: return false
         if (!frameAvailable) return false

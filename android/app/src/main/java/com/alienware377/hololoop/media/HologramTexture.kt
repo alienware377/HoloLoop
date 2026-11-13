@@ -12,6 +12,9 @@ interface HologramTexture {
     /** Advance to the newest frame (video). No-op for still images. Returns true if changed. */
     fun update(): Boolean = false
 
+    /** True when [update] has a new frame waiting. Safe to read from any thread. */
+    val hasNewFrame: Boolean get() = false
+
     /** Full texture pixel size (whole quilt / whole RGBD image). */
     val width: Int
     val height: Int

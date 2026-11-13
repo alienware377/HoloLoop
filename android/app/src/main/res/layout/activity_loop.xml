@@ -449,6 +449,51 @@
                     android:layout_height="wrap_content"
                     android:layout_marginTop="4dp" />
 
+                <com.google.android.material.slider.Slider
+                    android:id="@+id/coolFpsSlider"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:stepSize="1"
+                    android:valueFrom="12"
+                    android:valueTo="45" />
+
+                <TextView
+                    android:id="@+id/lensAlignLabel"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:textColor="#98A0B3"
+                    android:textSize="13sp" />
+
+                <com.google.android.material.slider.Slider
+                    android:id="@+id/lensAlignSlider"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:stepSize="1"
+                    android:valueFrom="-100"
+                    android:valueTo="100" />
+
+                <TextView
+                    android:id="@+id/lensBoostLabel"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:textColor="#98A0B3"
+                    android:textSize="13sp" />
+
+                <com.google.android.material.slider.Slider
+                    android:id="@+id/lensBoostSlider"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:stepSize="10"
+                    android:valueFrom="100"
+                    android:valueTo="400" />
+
+                <com.google.android.material.materialswitch.MaterialSwitch
+                    android:id="@+id/lensFlipSwitch"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Lens: reverse the views" />
+
                 <com.google.android.material.button.MaterialButton
                     android:id="@+id/testBtn"
                     style="@style/Widget.Material3.Button.TonalButton"
