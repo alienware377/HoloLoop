@@ -10,7 +10,7 @@ const { shell } = require('electron');
 const config = require('./config');
 const library = require('./library');
 const log = require('./log');
-const { FFMPEG, run } = require('../convert/media');
+const { FFMPEG, pickSmallEncoder } = require('../convert/media');
 
 let allowed = () => true;
 let current = null;                  // { id, name, out, proc, done, total }
@@ -41,6 +41,7 @@ function copiesOf(it) {
 function wants(it) {
   const s = settings();
   if (!s.compress || !it.enabled || it.status !== 'ready' || it.still || it.meta?.still || it.kind === 'quilt') return false;
+  if (it.meta?.mbps && it.meta.mbps <= s.mbps) return false;        // made small in the first place
   const st = stat(source(it)), dur = it.meta?.duration;
   if (!st || !dur) return false;
   return st.size * 8 / dur > s.mbps * 1e6 * 1.25;
@@ -82,20 +83,7 @@ function fileFor(it, name) {
 let encoder = null;
 async function pickEncoder() {
   if (encoder) return encoder;
-  const kbps = (m) => `${Math.round(m * 1000)}k`;
-  const cands = [
-    { name: 'hevc_nvenc', args: (m) => ['-c:v', 'hevc_nvenc', '-preset', 'p4', '-tune', 'hq', '-rc', 'vbr', '-b:v', kbps(m), '-maxrate', kbps(m * 1.6), '-bufsize', kbps(m * 2), '-spatial-aq', '1'] },
-    { name: 'hevc_qsv', args: (m) => ['-c:v', 'hevc_qsv', '-preset', 'slow', '-b:v', kbps(m), '-maxrate', kbps(m * 1.6)] },
-    { name: 'hevc_amf', args: (m) => ['-c:v', 'hevc_amf', '-quality', 'quality', '-rc', 'vbr_peak', '-b:v', kbps(m), '-maxrate', kbps(m * 1.6)] },
-    { name: 'libx265', args: (m) => ['-c:v', 'libx265', '-preset', 'fast', '-b:v', kbps(m), '-maxrate', kbps(m * 1.6), '-bufsize', kbps(m * 2)] },
-  ];
-  for (const c of cands) {
-    try {
-      await run(FFMPEG, ['-hide_banner', '-v', 'error', '-f', 'lavfi', '-i', 'color=black:s=2560x720:d=0.2', '-pix_fmt', 'yuv420p', ...c.args(4), '-f', 'null', '-'], { timeout: 20000 });
-      encoder = c; break;
-    } catch {}
-  }
-  encoder = encoder || cands[cands.length - 1];
+  encoder = await pickSmallEncoder();
   log.info(`phone copies use ${encoder.name}`);
   return encoder;
 }

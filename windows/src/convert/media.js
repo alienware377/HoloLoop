@@ -89,4 +89,25 @@ async function pickEncoder() {
   return encoderCache;
 }
 
-module.exports = { FFMPEG, FFPROBE, run, probe, pickEncoder, spawn };
+// HEVC at a set bitrate, for the small copies the phone plays. args(mbps) -> ffmpeg arguments.
+let smallCache = null;
+async function pickSmallEncoder() {
+  if (smallCache) return smallCache;
+  const kbps = (m) => `${Math.round(m * 1000)}k`;
+  const cands = [
+    { name: 'hevc_nvenc', args: (m) => ['-c:v', 'hevc_nvenc', '-preset', 'p4', '-tune', 'hq', '-rc', 'vbr', '-b:v', kbps(m), '-maxrate', kbps(m * 1.6), '-bufsize', kbps(m * 2), '-spatial-aq', '1'] },
+    { name: 'hevc_qsv', args: (m) => ['-c:v', 'hevc_qsv', '-preset', 'slow', '-b:v', kbps(m), '-maxrate', kbps(m * 1.6)] },
+    { name: 'hevc_amf', args: (m) => ['-c:v', 'hevc_amf', '-quality', 'quality', '-rc', 'vbr_peak', '-b:v', kbps(m), '-maxrate', kbps(m * 1.6)] },
+    { name: 'libx265', args: (m) => ['-c:v', 'libx265', '-preset', 'fast', '-b:v', kbps(m), '-maxrate', kbps(m * 1.6), '-bufsize', kbps(m * 2)] },
+  ];
+  for (const c of cands) {
+    try {
+      await run(FFMPEG, ['-hide_banner', '-v', 'error', '-f', 'lavfi', '-i', 'color=black:s=2560x720:d=0.2', '-pix_fmt', 'yuv420p', ...c.args(4), '-f', 'null', '-'], { timeout: 20000 });
+      smallCache = c; return c;
+    } catch {}
+  }
+  smallCache = cands[cands.length - 1];
+  return smallCache;
+}
+
+module.exports = { FFMPEG, FFPROBE, run, probe, pickEncoder, pickSmallEncoder, spawn };

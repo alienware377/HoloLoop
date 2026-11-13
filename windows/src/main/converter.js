@@ -211,7 +211,7 @@ function tick() {
   worker.postMessage({ type: 'job', job: {
     id: it.id, src: it.path, still: !!it.still, outFile, workDir: outFile + '.work',
     settings: { maxLong: c.maxLong, depthLong: library.QUALITY[it.quality] || c.depthLong, model: library.DEPTH_MODELS[it.model] ? it.model : (library.DEPTH_MODELS[c.depthModel] ? c.depthModel : 'standard'),
-      backend: c.backend, chunkSec: 60 },
+      backend: c.backend, chunkSec: 60, mbps: config.get().phone?.compress ? config.get().phone.mbps : 0 },
   } });
 }
 

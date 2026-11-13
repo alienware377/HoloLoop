@@ -9,7 +9,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { FFMPEG, run, probe, pickEncoder, spawn } = require('./media');
+const { FFMPEG, run, probe, pickEncoder, pickSmallEncoder, spawn } = require('./media');
 const { DepthEngine, modelSize } = require('./depth');
 
 const { VERSION } = require('./version');
@@ -140,7 +140,10 @@ async function convert(job, hooks = {}) {
   try { state = JSON.parse(fs.readFileSync(stateFile, 'utf8')); } catch {}
   // identify the source by name + size, not by folder, so moving it keeps finished pieces
   let size = 0; try { size = fs.statSync(job.src).size; } catch {}
-  const sig = { v: VERSION, pieces: 3, file: path.basename(job.src).toLowerCase(), size, geo, msz, model: s.model, chunkSec: s.chunkSec, rate: info.rate };
+  // with phone copies on, the 3D copy is made at the phone's bitrate in one go (no big copy, no second encode)
+  const small = s.mbps > 0;
+  const sig = { v: VERSION, pieces: 3, file: path.basename(job.src).toLowerCase(), size, geo, msz, model: s.model, chunkSec: s.chunkSec, rate: info.rate,
+    enc: small ? 'small' + s.mbps : 'full' };
   if (JSON.stringify(state.sig) !== JSON.stringify(sig)) state = { sig, done: [] };   // settings changed: start over
   const save = () => fs.writeFileSync(stateFile, JSON.stringify(state));
   save();
@@ -157,7 +160,8 @@ async function convert(job, hooks = {}) {
     catch (err) { if (!engines.length) throw err; break; }     // no room for another: run with what opened
     if (!backend.startsWith('dml')) break;                       // CPU fallback: one is plenty
   }
-  const enc = await pickEncoder();
+  const picked = small ? await pickSmallEncoder() : await pickEncoder();
+  const enc = { name: picked.name, args: small ? picked.args(s.mbps) : picked.args, hevc: /hevc|265/.test(picked.name) };
   let nChunks = Math.ceil(info.duration / s.chunkSec);
   const t0 = Date.now(); let doneSec = state.done.length * s.chunkSec, sessionSec = 0;
   const report = (stage, posSec) => {
@@ -208,11 +212,11 @@ async function convert(job, hooks = {}) {
   const args = ['-hide_banner', '-v', 'error', '-y', '-f', 'concat', '-safe', '0', '-i', list];
   if (info.hasAudio) args.push('-i', src, '-map', '0:v', '-map', '1:a:0', '-c:a', 'aac', '-b:a', '160k', '-shortest');
   else args.push('-map', '0:v');
-  args.push('-c:v', 'copy', '-movflags', '+faststart', tmpOut);
+  args.push('-c:v', 'copy', ...(enc.hevc ? ['-tag:v', 'hvc1'] : []), '-movflags', '+faststart', tmpOut);
   await run(FFMPEG, args);
   fs.renameSync(tmpOut, job.outFile);
   const meta = { kind: 'rgbd', depthLoc: 2, version: VERSION, width: geo.CW * 2, height: geo.CH, colorW: geo.CW, colorH: geo.CH,
-    depthW: msz.W, depthH: msz.H, model: s.model, fps: info.fps, duration: Math.min(info.duration, nChunks * s.chunkSec), src: job.src, backend, encoder: enc.name, made: new Date().toISOString() };
+    depthW: msz.W, depthH: msz.H, model: s.model, fps: info.fps, duration: Math.min(info.duration, nChunks * s.chunkSec), src: job.src, backend, encoder: enc.name, mbps: small ? s.mbps : null, made: new Date().toISOString() };
   fs.writeFileSync(job.outFile + '.json', JSON.stringify(meta, null, 2));
   fs.rmSync(job.workDir, { recursive: true, force: true });
   report('done', info.duration);

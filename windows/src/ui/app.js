@@ -332,7 +332,7 @@ function phoneCopyCard() {
   const ready = items.filter((i) => i.phone?.state === 'ready').length, todo = items.filter((i) => i.phone && i.phone.state !== 'ready').length;
   return `<div class="card"><h2>Smaller copies for the phone</h2>
       <p class="tip" style="margin:4px 0 10px">Makes a lighter copy of each 3D video for the phone, so more fit on it. The full-size 3D copies on this PC stay as they are, and the 3D and framing don't have to be made again.</p>
-      ${sw('phone.compress', 'Send smaller copies to the phone', 'The phone swaps each big video for its small copy once it is made')}
+      ${sw('phone.compress', 'Send smaller copies to the phone', 'New videos are made small straight away. Older ones get a small copy, and the phone swaps to it once it is made')}
       ${p.compress ? `<div style="margin-top:12px">${range('phone.mbps', 'Quality', 2, 16, 0.5, (v) => `${v} Mbit/s · about ${(v * 0.45).toFixed(1)} GB per hour · ${v < 4 ? 'small, softer picture' : v < 8 ? 'good' : v < 12 ? 'very good' : 'close to the original'}`)}</div>
       <p class="muted" data-est style="margin:4px 0 0">${estText(p.mbps)}</p>
       <p class="muted" style="margin:4px 0 0">${ready} made${todo ? `, ${todo} still to make` : ''}.</p>${busy}` : ''}
