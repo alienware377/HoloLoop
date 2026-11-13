@@ -333,11 +333,14 @@ class VideoTexture(
         GLES30.glViewport(vp[0], vp[1], vp[2], vp[3])
     }
 
-    /** Draw into [color], and into [depth] too unless it is 0 (the second output of oes_blit.frag / steady.frag). */
+    /** Draw into [color], and into [depth] too unless it is 0 (the second output of oes_blit.frag / steady.frag).
+     *  Whatever the pass does not draw of them is never read (steady_h.frag fills only the depth half). */
     private fun attach(color: Int, depth: Int) {
         GLES30.glFramebufferTexture2D(GLES30.GL_FRAMEBUFFER, GLES30.GL_COLOR_ATTACHMENT0, GLES30.GL_TEXTURE_2D, color, 0)
         GLES30.glFramebufferTexture2D(GLES30.GL_FRAMEBUFFER, GLES30.GL_COLOR_ATTACHMENT1, GLES30.GL_TEXTURE_2D, depth, 0)
         GLES30.glDrawBuffers(2, if (depth != 0) BOTH else FIRST, 0)
+        // every pass here overwrites what it draws into, so the GPU need not load the old pixels first
+        GLES30.glInvalidateFramebuffer(GLES30.GL_FRAMEBUFFER, 2, BOTH, 0)
     }
 
     private fun newTexture(internal: Int, format: Int, type: Int, w: Int, h: Int, filter: Int): Int {
