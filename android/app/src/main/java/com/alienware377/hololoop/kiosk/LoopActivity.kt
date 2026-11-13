@@ -428,11 +428,23 @@ class LoopActivity : AppCompatActivity(), PlaybackEvents, GoMenu.Host, FxPanel.H
 
     // ------------------------------------------------------------------ screen
     private fun showPanel(show: Boolean) {
+        val was = blackout.visibility != View.VISIBLE
         blackout.visibility = if (show) View.GONE else View.VISIBLE
         if (!show && ::root.isInitialized) root.requestFocus()
         val lp = window.attributes
         lp.screenBrightness = if (show) WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE else 0.01f
+        // the black screen needs no 120 Hz; 60 matches the Go, whose menu animates on the phone's clock
+        lp.preferredDisplayModeId = if (show) 0 else blackMode
         window.attributes = lp
+        if (show && !was) render()      // the controls are not kept up to date while black
+    }
+
+    /** The phone screen's 60 Hz mode at its current size (0 = none found, leave it to the phone). */
+    private val blackMode: Int by lazy {
+        @Suppress("DEPRECATION") val d = if (Build.VERSION.SDK_INT >= 30) display else windowManager.defaultDisplay
+        val cur = d?.mode ?: return@lazy 0
+        d.supportedModes.filter { it.physicalWidth == cur.physicalWidth && it.physicalHeight == cur.physicalHeight && it.refreshRate >= 59f }
+            .minByOrNull { it.refreshRate }?.modeId ?: 0
     }
 
     private val ticker = object : Runnable {
@@ -1056,6 +1068,7 @@ class LoopActivity : AppCompatActivity(), PlaybackEvents, GoMenu.Host, FxPanel.H
     }
 
     private fun render() {
+        if (::blackout.isInitialized && blackout.visibility == View.VISIBLE) return    // nobody can see it; showPanel catches up
         val go = presentation != null
         val s = prefs.sleep
         val cal = calibration

@@ -15,6 +15,9 @@ interface HologramTexture {
     /** True when [update] has a new frame waiting. Safe to read from any thread. */
     val hasNewFrame: Boolean get() = false
 
+    /** A one-channel (red only) copy of the picture [ensure] returns, for the 3D shader's depth reads. 0 = none, read the picture itself. */
+    val depthTex: Int get() = 0
+
     /** Full texture pixel size (whole quilt / whole RGBD image). */
     val width: Int
     val height: Int

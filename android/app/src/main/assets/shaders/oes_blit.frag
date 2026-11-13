@@ -3,7 +3,9 @@
 precision highp float;
 in vec2 v_uv;
 uniform samplerExternalOES tex;
-out vec4 color;
+layout(location = 0) out vec4 color;
+layout(location = 1) out vec4 depthCopy;   // r again, for the one-channel copy the 3D shader reads depth from
 void main() {
     color = texture(tex, v_uv);
+    depthCopy = vec4(color.r);
 }

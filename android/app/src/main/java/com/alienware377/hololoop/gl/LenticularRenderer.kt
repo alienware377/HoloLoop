@@ -19,36 +19,59 @@ import javax.microedition.khronos.opengles.GL10
 /**
  * Renders the lenticular interleave to fill the Looking Glass display surface.
  * Applies the device [Calibration] to the current [HologramItem].
+ *
+ * The Go is drawn only when its picture changes: a new video frame, another item, a setting.
+ * In between it keeps showing the last frame by itself, so a paused video or a still costs
+ * nothing. [onChange] is how the renderer asks for a drawing.
  */
 class LenticularRenderer(private val context: Context) : GLSurfaceView.Renderer {
 
     @Volatile var calibration: Calibration = Calibration.placeholder()
-        set(v) { field = v; poked = true }
+        set(v) { field = v; poke() }
     /** HoloLoop's 3D look. null = use the item's own depth values (studio behaviour). */
     @Volatile var look: Look? = null
-        set(v) { field = v; poked = true }
+        set(v) { field = v; poke() }
     @Volatile var events: PlaybackEvents? = null
     /** Video filters (HoloLoop), applied to the colour of RGBD pictures. null = none. */
     @Volatile var fx: FxState? = null
-        set(v) { field = v; poked = true }
+        set(v) { field = v; poke() }
+    /** Cool mode: show at most this many video frames a second (0 = all of them). */
+    @Volatile var maxFps = 0
+        set(v) { field = v; (texture as? VideoTexture)?.maxFps = v }
+    /** Called on any thread when the Go should be drawn again. */
+    @Volatile var onChange: (() -> Unit)? = null
+    /** Called on the GL thread when moving filters start; they need pacing (see [needsDraw]). */
+    @Volatile var onAnimating: (() -> Unit)? = null
 
-    // Once the picture has stopped changing (paused video, a still, asleep) there is no need to
-    // draw the Go again: it keeps showing the last frame. [needsDraw] says when that is over.
     @Volatile private var poked = true
-    @Volatile private var idle = false
-    private var quietFrames = 0
+    /** Moving filters (glitch, bokeh, grain) are on: they need a fresh picture ~30 times a second, even on a still frame. */
+    @Volatile var animating = false
+        private set
+    @Volatile private var lastAnimNs = 0L
+    private fun poke() { poked = true; onChange?.invoke() }
 
-    /** False while the Go already shows everything there is to show. Safe to call from any thread. */
-    fun needsDraw(): Boolean = !idle || poked || pendingItem != null || clearRequested || texture?.hasNewFrame == true
+    /** True when a drawing now would show something new. Safe to call from any thread. */
+    fun needsDraw(): Boolean = poked || pendingItem != null || clearRequested || texture?.hasNewFrame == true ||
+        (animating && System.nanoTime() - lastAnimNs > 30_000_000L)
     @Volatile private var pendingItem: HologramItem? = null
     @Volatile private var clearRequested = false
     private var loggedOnce = false
 
     private var quiltProgram = 0
-    private var rgbdProgram = 0
     private var quadVbo = 0
+    // The RGBD shader is built once per edge mode and step count, with those as constants: each
+    // program then holds only the code its mode runs, and its ray march has a fixed length.
+    private var rgbdSource = ""
+    private val rgbdPrograms = HashMap<Int, Int>()
+    private val uniforms = HashMap<Int, HashMap<String, Int>>()
 
-    private var texture: HologramTexture? = null
+    private fun rgbdProgram(edgeFix: Int, iterations: Int): Int = rgbdPrograms.getOrPut(edgeFix * 1000 + iterations) {
+        val defines = "#define EDGE_FIX $edgeFix\n#define ITERATIONS $iterations\n"
+        val at = rgbdSource.indexOf('\n') + 1      // after #version
+        GlUtil.link(GlUtil.loadAsset(context, "shaders/lenticular.vert"), rgbdSource.substring(0, at) + defines + rgbdSource.substring(at))
+    }
+
+    @Volatile private var texture: HologramTexture? = null
     private var currentItem: HologramItem? = null
     private var surfaceW = 0
     private var surfaceH = 0
@@ -56,60 +79,27 @@ class LenticularRenderer(private val context: Context) : GLSurfaceView.Renderer 
     private var loggedFramingFor: HologramItem? = null
 
     /** Swap the displayed hologram; texture is (re)built on the GL thread. */
-    fun setItem(item: HologramItem?) { if (item == null) { pendingItem = null; clearRequested = true } else { clearRequested = false; pendingItem = item }; poked = true }
+    fun setItem(item: HologramItem?) { if (item == null) { pendingItem = null; clearRequested = true } else { clearRequested = false; pendingItem = item }; poke() }
 
     fun setPaused(paused: Boolean) { (texture as? VideoTexture)?.setPaused(paused) }
     fun setVolume(v: Float) { (texture as? VideoTexture)?.setVolume(v) }
     fun seekBy(ms: Long) { (texture as? VideoTexture)?.seekBy(ms) }
     fun seekTo(ms: Long) { (texture as? VideoTexture)?.seekTo(ms) }
 
-    // The 3D picture only changes when the video shows a new frame (or the look, item or
-    // calibration change), so it is drawn into [cacheTex] then and copied to the screen on
-    // every refresh. A 30 fps video then costs half the GPU work of drawing it at 60 Hz.
-    private var blitProgram = 0
-    private var cacheFbo = 0
-    private var cacheTex = 0
-    private var cacheW = 0
-    private var cacheH = 0
-    private var cacheValid = false
-    private var drawnLook: Look? = null
-    private var drawnCal: Calibration? = null
-    private var drawnFx: FxState? = null
     private var fxPass = FxPass()
-    private var lastAnimNs = 0L
 
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
         GLES30.glClearColor(0f, 0f, 0f, 1f)
         quiltProgram = GlUtil.program(context, "shaders/lenticular.vert", "shaders/quilt_lenticular.frag")
-        rgbdProgram = GlUtil.program(context, "shaders/lenticular.vert", "shaders/rgbd_lenticular.frag")
-        blitProgram = GlUtil.link(BLIT_VERT, BLIT_FRAG)
+        rgbdSource = GlUtil.loadAsset(context, "shaders/rgbd_lenticular.frag")
+        rgbdPrograms.clear(); uniforms.clear()      // a new GL context: the old ones are gone
         quadVbo = GlUtil.fullscreenQuadVbo()
-        cacheFbo = 0; cacheTex = 0; cacheW = 0; cacheH = 0; cacheValid = false   // new GL context
         fxPass = FxPass()
     }
 
     override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) {
         surfaceW = width; surfaceH = height
         GLES30.glViewport(0, 0, width, height)
-        cacheValid = false; idle = false; quietFrames = 0
-    }
-
-    private fun ensureCache() {
-        if (cacheTex != 0 && cacheW == surfaceW && cacheH == surfaceH) return
-        if (cacheTex != 0) { GLES30.glDeleteTextures(1, intArrayOf(cacheTex), 0); GLES30.glDeleteFramebuffers(1, intArrayOf(cacheFbo), 0) }
-        val ids = IntArray(1)
-        GLES30.glGenTextures(1, ids, 0); cacheTex = ids[0]
-        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, cacheTex)
-        GLES30.glTexImage2D(GLES30.GL_TEXTURE_2D, 0, GLES30.GL_RGBA8, surfaceW, surfaceH, 0, GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE, null)
-        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MIN_FILTER, GLES30.GL_NEAREST)
-        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MAG_FILTER, GLES30.GL_NEAREST)
-        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_S, GLES30.GL_CLAMP_TO_EDGE)
-        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_T, GLES30.GL_CLAMP_TO_EDGE)
-        GLES30.glGenFramebuffers(1, ids, 0); cacheFbo = ids[0]
-        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, cacheFbo)
-        GLES30.glFramebufferTexture2D(GLES30.GL_FRAMEBUFFER, GLES30.GL_COLOR_ATTACHMENT0, GLES30.GL_TEXTURE_2D, cacheTex, 0)
-        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
-        cacheW = surfaceW; cacheH = surfaceH; cacheValid = false
     }
 
     private var frames = 0
@@ -123,27 +113,25 @@ class LenticularRenderer(private val context: Context) : GLSurfaceView.Renderer 
      * middle of the screen, [lensDepth] multiplies the 3D strength, [lensFlip] reverses the views.
      */
     @Volatile var lensPitch = 1f
-        set(v) { field = v; poked = true }
+        set(v) { field = v; poke() }
     @Volatile var lensDepth = 1f
-        set(v) { field = v; poked = true }
+        set(v) { field = v; poke() }
     @Volatile var lensFlip = false
-        set(v) { field = v; poked = true }
-    private var drawnLens: Triple<Float, Float, Boolean>? = null
+        set(v) { field = v; poke() }
 
+    // Every call draws the whole picture: the screen's buffers do not keep the last one.
     override fun onDrawFrame(gl: GL10?) {
         poked = false                     // first, so a change made while drawing asks for one more frame
-        val itemChanged = applyPendingItem()
+        applyPendingItem()
         val item = currentItem
         val tex = texture
         if (item == null || tex == null) {
             GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
             GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
-            cacheValid = false
-            settle(itemChanged, false)
+            animating = false
             return
         }
         val lk = look
-        val cal = calibration
         (tex as? VideoTexture)?.let {
             it.steady = if (item.isRgbd) (lk?.steady ?: 0) else 0
             it.steadyMove = if (item.isRgbd) (lk?.steadyMove ?: 0) else 0
@@ -152,50 +140,31 @@ class LenticularRenderer(private val context: Context) : GLSurfaceView.Renderer 
         val fresh = tex.update()          // new frame first, so ensure() hands back the newest (steadied) picture
         val texId = tex.ensure()
 
-        // how often the Go is refreshed, and how often the 3D is really drawn
+        // how often the Go is drawn, and how many of those drawings had a new video frame
         frames++
+        if (fresh) passes++
         val now = System.nanoTime()
         if (now - fpsSince > 10_000_000_000L) {
-            if (fpsSince > 0) android.util.Log.i("HoloLoop", "draw %.1f fps, 3D %.1f/s, edges ${lk?.edgeFix ?: 0}".format(frames * 1e9 / (now - fpsSince), passes * 1e9 / (now - fpsSince)))
+            if (fpsSince > 0) android.util.Log.i("HoloLoop", "draw %.1f/s, new frames %.1f/s, edges ${lk?.edgeFix ?: 0}".format(frames * 1e9 / (now - fpsSince), passes * 1e9 / (now - fpsSince)))
             fpsSince = now; frames = 0; passes = 0
         }
 
-        ensureCache()
         val fxs = if (item.isRgbd) fx?.takeIf { it.active.isNotEmpty() } else null
-        // moving filters (glitch, bokeh, grain) need fresh pictures even on a still frame, ~30 a second
-        val animate = fxs?.animated == true && now - lastAnimNs > 30_000_000L
-        val lens = Triple(lensPitch, lensDepth, lensFlip)
-        val redraw = fresh || itemChanged || !cacheValid || lk != drawnLook || cal !== drawnCal || fxs != drawnFx || animate || lens != drawnLens
-        if (redraw) {
-            if (fxs?.animated == true) lastAnimNs = now
-            val src = if (fxs != null) fxPass.apply(texId, tex.texW, tex.texH, item.depthLoc, fxs) else texId
-            GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, cacheFbo)
-            GLES30.glViewport(0, 0, surfaceW, surfaceH)
-            GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
-            drawHologram(item, tex, src, lk)
-            cacheValid = true; drawnLook = lk; drawnCal = cal; drawnFx = fxs; drawnLens = lens; passes++
-        }
-        // copy the finished picture to the screen, pixel for pixel
+        val moving = fxs?.animated == true
+        if (moving) lastAnimNs = now
+        if (moving != animating) { animating = moving; if (moving) onAnimating?.invoke() }
+        val src = if (fxs != null) fxPass.apply(texId, tex.texW, tex.texH, item.depthLoc, fxs) else texId
+        // depth from the one-channel copy when there is one (filters move the depth, so then from their picture)
+        val depthId = if (fxs == null) tex.depthTex.takeIf { it != 0 } ?: src else src
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
         GLES30.glViewport(0, 0, surfaceW, surfaceH)
-        GLES30.glUseProgram(blitProgram)
-        GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
-        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, cacheTex)
-        GLES30.glUniform1i(loc(blitProgram, "tex"), 0)
-        GlUtil.bindQuadAttrib(blitProgram, quadVbo)
-        GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4)
-        settle(redraw, fxs?.animated == true)
+        GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
+        drawHologram(item, tex, src, depthId, lk)
     }
 
-    /** Count frames that showed nothing new; a few in a row (to fill every buffer) and the Go can rest. */
-    private fun settle(changed: Boolean, moving: Boolean) {
-        quietFrames = if (changed || moving) 0 else quietFrames + 1
-        idle = quietFrames >= 3
-    }
-
-    private fun drawHologram(item: HologramItem, tex: HologramTexture, texId: Int, lk: Look?) {
+    private fun drawHologram(item: HologramItem, tex: HologramTexture, texId: Int, depthId: Int, lk: Look?) {
         val isRgbd = item.isRgbd
-        val program = if (isRgbd) rgbdProgram else quiltProgram
+        val program = if (isRgbd) rgbdProgram(lk?.edgeFix ?: 0, lk?.iterations ?: 14) else quiltProgram
         GLES30.glUseProgram(program)
         GLES30.glViewport(0, 0, surfaceW, surfaceH)
 
@@ -207,7 +176,7 @@ class LenticularRenderer(private val context: Context) : GLSurfaceView.Renderer 
                 "shaderSlope=${calibration.shaderSlope} center=${calibration.shaderCenter} " +
                 "subpx=${calibration.shaderSubpixelSize} sw=${calibration.screenW} sh=${calibration.screenH} " +
                 "dpi=${calibration.dpi} rawPitch=${calibration.pitch} rawSlope=${calibration.slope} " +
-                "invView=${calibration.invView} shProg=$quiltProgram")
+                "invView=${calibration.invView} shProg=$quiltProgram depthBits=${IntArray(1).also { GLES30.glGetIntegerv(GLES30.GL_DEPTH_BITS, it, 0) }[0]}")
         }
 
         // quad size on the panel: whole picture (letterbox) or fill (crop), then zoom
@@ -276,6 +245,11 @@ class LenticularRenderer(private val context: Context) : GLSurfaceView.Renderer 
             GLES30.glUniform2f(loc(program, "view_portion"), item.viewPortionX, item.viewPortionY)
         }
 
+        if (isRgbd) {
+            GLES30.glActiveTexture(GLES30.GL_TEXTURE1)
+            GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, depthId)
+            GLES30.glUniform1i(loc(program, "dtex"), 1)
+        }
         GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, texId)
         GLES30.glUniform1i(loc(program, "tex"), 0)
@@ -295,13 +269,19 @@ class LenticularRenderer(private val context: Context) : GLSurfaceView.Renderer 
         if (p === currentItem) return changed
         texture?.release()
         currentItem = p
-        texture = TextureFactory.create(context, p, events = events)
+        texture = TextureFactory.create(context, p, events = events).also { t ->
+            (t as? VideoTexture)?.let { it.maxFps = maxFps; it.onFrame = { onChange?.invoke() } }
+        }
         pendingItem = null
         return true
     }
 
     /** Free the decoder and textures (GL thread). */
-    fun release() { texture?.release(); texture = null; currentItem = null; fxPass.release() }
+    fun release() {
+        texture?.release(); texture = null; currentItem = null; fxPass.release()
+        for (p in rgbdPrograms.values) GLES30.glDeleteProgram(p)
+        rgbdPrograms.clear(); uniforms.clear()
+    }
 
     /** Main thread: stop the decoder right away (the GL side follows on the GL thread). */
     fun releasePlayerNow() { (texture as? VideoTexture)?.releasePlayer() }
@@ -313,12 +293,6 @@ class LenticularRenderer(private val context: Context) : GLSurfaceView.Renderer 
         return if (item.depthLoc == 0 || item.depthLoc == 1) whole * 2f else whole * 0.5f
     }
 
-    private fun loc(p: Int, name: String) = GLES30.glGetUniformLocation(p, name)
-
-    private companion object {
-        const val BLIT_VERT = "#version 300 es\nin vec2 position;\nvoid main() { gl_Position = vec4(position, 0.0, 1.0); }\n"
-        const val BLIT_FRAG = "#version 300 es\nprecision mediump float;\nuniform sampler2D tex;\nout vec4 color;\n" +
-            "void main() { color = texelFetch(tex, ivec2(gl_FragCoord.xy), 0); }\n"
-    }
+    private fun loc(p: Int, name: String) = uniforms.getOrPut(p) { HashMap() }.getOrPut(name) { GLES30.glGetUniformLocation(p, name) }
     private fun uf(p: Int, name: String, v: Float) = GLES30.glUniform1f(loc(p, name), v)
 }

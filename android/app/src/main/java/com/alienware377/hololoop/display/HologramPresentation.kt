@@ -39,17 +39,21 @@ class HologramPresentation(
     var fx: FxState? = null
         set(v) { field = v; if (::renderer.isInitialized) renderer.fx = v }
     /**
-     * Cool mode: draw the Go only this many times a second (0 = every refresh, 60). The 3D is then
-     * drawn at most that often too; a faster video skips frames, and the phone runs cooler.
-     * Either way the Go is only drawn while its picture changes, so a paused video costs nothing.
+     * Cool mode: show at most this many video frames a second (0 = all of them, up to the Go's 60).
+     * A faster video skips frames, and the phone runs cooler. Either way the Go is only drawn when
+     * its picture changes, so a paused video costs nothing.
      */
     var fpsCap: Int = 0
-        set(v) { field = v; if (::glView.isInitialized) applyFpsCap() }
+        set(v) { field = v; if (::renderer.isInitialized) renderer.maxFps = v }
 
+    // Drawings are asked for by the renderer itself (renderer.onChange): a new video frame, a new
+    // item, a setting. Only moving filters need a steady beat, ~30 a second (or the cool mode rate),
+    // and this pacer gives it to them; it runs only while they are on.
     private var lastPaced = 0L
+    private var pacing = false
     private val pacer = object : Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) {
-            if (!::glView.isInitialized) return
+            if (!::glView.isInitialized || !renderer.animating) { pacing = false; return }
             val cap = fpsCap
             if (cap <= 0) {
                 if (renderer.needsDraw()) glView.requestRender()
@@ -66,10 +70,10 @@ class HologramPresentation(
         }
     }
 
-    private fun applyFpsCap() {
-        Choreographer.getInstance().removeFrameCallback(pacer)
-        glView.renderMode = GLSurfaceView.RENDERMODE_WHEN_DIRTY
-        lastPaced = 0L
+    /** Main thread: start the beat for moving filters. */
+    private fun pace() {
+        if (pacing || !::glView.isInitialized || !renderer.animating) return
+        pacing = true; lastPaced = 0L
         Choreographer.getInstance().postFrameCallback(pacer)
     }
     /** Lens correction (see LenticularRenderer.lensPitch). Set any time. */
@@ -90,13 +94,15 @@ class HologramPresentation(
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         renderer = LenticularRenderer(context).also { it.calibration = calibration; it.look = look; it.events = events; it.fx = fx
-            it.lensPitch = lensPitch; it.lensDepth = lensDepth; it.lensFlip = lensFlip }
+            it.lensPitch = lensPitch; it.lensDepth = lensDepth; it.lensFlip = lensFlip; it.maxFps = fpsCap }
         glView = GLSurfaceView(context).apply {
             setEGLContextClientVersion(3)
+            setEGLConfigChooser(8, 8, 8, 0, 0, 0)     // no depth or stencil buffer: nothing draws with them
             setRenderer(renderer)
-            renderMode = GLSurfaceView.RENDERMODE_CONTINUOUSLY
+            renderMode = GLSurfaceView.RENDERMODE_WHEN_DIRTY
         }
-        applyFpsCap()
+        renderer.onChange = { glView.requestRender() }
+        renderer.onAnimating = { glView.post { pace() } }
         val ov = overlay
         if (ov == null) setContentView(glView)
         else setContentView(FrameLayout(context).apply {
@@ -121,7 +127,8 @@ class HologramPresentation(
     }
 
     override fun onStop() {
-        Choreographer.getInstance().removeFrameCallback(pacer)
+        Choreographer.getInstance().removeFrameCallback(pacer); pacing = false
+        if (::renderer.isInitialized) { renderer.onChange = null; renderer.onAnimating = null }
         if (::glView.isInitialized) {
             renderer.releasePlayerNow()                   // the decoder goes now, whatever the GL thread does
             glView.queueEvent { renderer.release() }      // GL objects (die with the context anyway)

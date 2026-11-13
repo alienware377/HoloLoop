@@ -7,7 +7,8 @@
 // wins (parallax occlusion mapping): near objects cover far ones and revealed
 // gaps fill with background instead of a ghost copy. The search runs once per
 // pixel at the green subpixel's view; red and blue reuse the depth it found.
-// Kept in step with HoloLoop's PC player (src/player/shaders.js).
+// Kept in step with HoloLoop's PC player (src/player/shaders.js). The phone reads depth from a
+// one-channel copy (dtex) and builds a program per edge mode and step count (EDGE_FIX, ITERATIONS).
 precision highp float;
 precision highp sampler2D;
 
@@ -15,6 +16,7 @@ in vec2 v_uv;
 in vec2 v_screen_uv;
 
 uniform sampler2D tex;       // colour + depth in one picture, v=0 is the bottom
+uniform sampler2D dtex;      // the same picture's red channel only (the depth half is what counts)
 uniform float pitch;
 uniform float slope;
 uniform float center;
@@ -27,8 +29,16 @@ uniform int depth_loc;       // 0 top, 1 bottom, 2 right, 3 left
 uniform int depth_inversion; // 1 = white is far
 uniform float depthiness;    // max parallax, fraction of the picture width
 uniform float focus;         // depth value that sits on the glass
+#ifdef ITERATIONS
+const int iterations = ITERATIONS;
+#else
 uniform int iterations;      // ray-march steps
+#endif
+#ifdef EDGE_FIX
+const int edgeFix = EDGE_FIX;
+#else
 uniform int edgeFix;         // 3D edge fixing, see the block below (0 = off, the original look)
+#endif
 uniform vec3 mapU;           // shown picture q (0..1) -> colour uv: u = dot(mapU,(q,1)), v = dot(mapV,(q,1))
 uniform vec3 mapV;           // (crop, pan, zoom and quarter turns from the framing)
 uniform vec4 contentRect;    // the real picture in the colour half (U0, V0, U1, V1), no black bars
@@ -65,14 +75,14 @@ vec2 inRect(vec2 uv) {
 
 // depth at a point q of the SHOWN picture
 float depthAt(vec2 q) {
-    float d = texture(tex, depthUV(inRect(qmap(q)))).r;
+    float d = textureLod(dtex, depthUV(inRect(qmap(q))), 0.0).r;
     return depth_inversion == 1 ? 1.0 - d : d;
 }
 
 // one colour channel at column sx of the shown picture
 float colourAt(float sx, float y, int ch) {
     vec2 m = qmap(vec2(sx, y));
-    float c = texture(tex, colorUV(inRect(m)))[ch];
+    float c = textureLod(tex, colorUV(inRect(m)), 0.0)[ch];
     if (edgeFix >= 2) {
         // window frame: past the real picture edge is black, not the last column repeated
         vec2 o = max(contentRect.xy - m, m - contentRect.zw) / pxUV();   // pixels outside (negative = inside)
@@ -164,7 +174,7 @@ vec3 rgbdColor(vec2 uv, vec3 vl) {
     if (edgeFix == 0) {               // off: red and blue reuse green's depth (the original look)
         for (int ch = 0; ch < 3; ch++) {
             vec2 s = inRect(qmap(vec2(uv.x - k[ch] * (z - focus), uv.y)));
-            c[ch] = texture(tex, colorUV(s))[ch];
+            c[ch] = textureLod(tex, colorUV(s), 0.0)[ch];
         }
         return c;
     }

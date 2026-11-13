@@ -8,10 +8,19 @@ import android.opengl.GLES30
 import android.os.Handler
 import android.os.Looper
 import android.view.Surface
+import androidx.media3.common.C
+import androidx.media3.common.Format
 import androidx.media3.common.MediaItem
+import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.Renderer
 import androidx.media3.exoplayer.SeekParameters
+import androidx.media3.exoplayer.mediacodec.MediaCodecAdapter
+import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
+import androidx.media3.exoplayer.video.MediaCodecVideoRenderer
+import androidx.media3.exoplayer.video.VideoRendererEventListener
 import com.alienware377.hololoop.gl.GlUtil
+import java.nio.ByteBuffer
 
 /**
  * Decodes a quilt video with ExoPlayer into an external-OES texture, then blits
@@ -58,9 +67,22 @@ class VideoTexture(
     override val texW: Int get() = if (steadyOn && outTex != 0 && outTex != tex2d && stabW > 0) stabW else width
     override val texH: Int get() = if (steadyOn && outTex != 0 && outTex != tex2d && stabH > 0) stabH else height
     private var stabT = 0f
+    // One-channel copies of the depth for the 3D shader (a quarter of the bytes per read), written
+    // alongside tex2d and the steadied frame. And steady_h.frag's per-row motion, in floats.
+    private var blitDepth = 0
+    private var stabDepth = 0
+    private var rowsTex = 0
+    private var rowsProgram = 0
+    private var rowsOk = false
+    override val depthTex: Int get() = if (steadyOn && outTex != 0 && outTex != tex2d) stabDepth else blitDepth
     @Volatile private var restartSteady = false
     private val stMatrix = FloatArray(16)
     @Volatile private var frameAvailable = false
+    /** Cool mode: pass on at most this many video frames a second (0 = all). The rest are skipped
+     *  as soon as they are decoded instead of being handed to the 3D drawing for nothing. */
+    @Volatile var maxFps = 0
+    /** Called on the main thread when a new frame is waiting. */
+    @Volatile var onFrame: (() -> Unit)? = null
     // media time for the GL thread (ExoPlayer may only be touched on the main thread)
     @Volatile private var posMs = 0L
     @Volatile private var posAtNs = 0L
@@ -109,6 +131,8 @@ class VideoTexture(
         GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_S, GLES30.GL_CLAMP_TO_EDGE)
         GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_T, GLES30.GL_CLAMP_TO_EDGE)
 
+        blitDepth = newTexture(GLES30.GL_R8, GLES30.GL_RED, GLES30.GL_UNSIGNED_BYTE, width, height, GLES30.GL_LINEAR)
+
         val f = IntArray(1)
         GLES30.glGenFramebuffers(1, f, 0)
         fbo = f[0]
@@ -118,7 +142,7 @@ class VideoTexture(
 
         surfaceTexture = SurfaceTexture(oesTex).apply {
             setDefaultBufferSize(width, height)
-            setOnFrameAvailableListener { frameAvailable = true }
+            setOnFrameAvailableListener({ frameAvailable = true; onFrame?.invoke() }, Handler(Looper.getMainLooper()))
         }
         surface = Surface(surfaceTexture)
 
@@ -131,7 +155,10 @@ class VideoTexture(
                 .setTargetBufferBytes(40 * 1024 * 1024)
                 .setPrioritizeTimeOverSizeThresholds(false)
                 .build()
-            val p = ExoPlayer.Builder(context).setLoadControl(load).build()
+            val p = ExoPlayer.Builder(context, CappedRenderers(context) { maxFps })
+                .setLoadControl(load)
+                .experimentalSetDynamicSchedulingEnabled(true)   // wake the playback thread only when there is work
+                .build()
             player = p
             p.setVideoSurface(surface)
             p.addListener(object : androidx.media3.common.Player.Listener {
@@ -141,7 +168,7 @@ class VideoTexture(
             })
             p.setMediaItem(MediaItem.fromUri(uri))
             p.repeatMode = if (loop) ExoPlayer.REPEAT_MODE_ALL else ExoPlayer.REPEAT_MODE_OFF
-            p.volume = volume
+            setSound(p, volume)
             if (events != null) {
                 p.addListener(object : androidx.media3.common.Player.Listener {
                     private var started = false
@@ -211,6 +238,9 @@ class VideoTexture(
         if (stab[0] == 0) {
             GLES30.glGenTextures(2, stab, 0)
             steadyProgram = GlUtil.program(context, "shaders/steady.vert", "shaders/steady.frag")
+            rowsOk = GLES30.glGetString(GLES30.GL_EXTENSIONS)?.contains("GL_EXT_color_buffer_float") == true
+            if (rowsOk) rowsProgram = runCatching { GlUtil.program(context, "shaders/steady.vert", "shaders/steady_h.frag") }.getOrDefault(0)
+            rowsOk = rowsProgram != 0
         }
         if (sw != stabW || sh != stabH) {
             for (tx in stab) {
@@ -221,6 +251,9 @@ class VideoTexture(
                 GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_S, GLES30.GL_CLAMP_TO_EDGE)
                 GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_T, GLES30.GL_CLAMP_TO_EDGE)
             }
+            if (stabDepth != 0) GLES30.glDeleteTextures(2, intArrayOf(stabDepth, rowsTex), 0)
+            stabDepth = newTexture(GLES30.GL_R8, GLES30.GL_RED, GLES30.GL_UNSIGNED_BYTE, sw, sh, GLES30.GL_LINEAR)
+            rowsTex = newTexture(GLES30.GL_R32F, GLES30.GL_RED, GLES30.GL_FLOAT, sw, sh, GLES30.GL_NEAREST)
             stabW = sw; stabH = sh; stabFresh = true
         }
         val prevFbo = IntArray(1)
@@ -229,8 +262,32 @@ class VideoTexture(
         GLES30.glGetIntegerv(GLES30.GL_VIEWPORT, vp, 0)
         val src = stab[stabI]
         val dst = stab[1 - stabI]
+        val still = if (stabFresh) 1f else STILL.getOrElse(level) { 0.25f }
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fbo)
-        GLES30.glFramebufferTexture2D(GLES30.GL_FRAMEBUFFER, GLES30.GL_COLOR_ATTACHMENT0, GLES30.GL_TEXTURE_2D, dst, 0)
+
+        // first half of the motion search, over the depth half only (+1 px for odd sizes)
+        val rows = rowsOk && still < 1f
+        if (rows) {
+            attach(rowsTex, 0)
+            val x0 = when (depthLoc) { 2 -> (sw - 1) / 2; else -> 0 }
+            val y0 = when (depthLoc) { 0 -> (sh - 1) / 2; else -> 0 }
+            val w = if (depthLoc >= 2) sw - (sw - 1) / 2 else sw
+            val h = if (depthLoc >= 2) sh else sh - (sh - 1) / 2
+            GLES30.glViewport(x0, y0, w, h)
+            GLES30.glUseProgram(rowsProgram)
+            GlUtil.bindQuadAttrib(rowsProgram, quadVbo)
+            GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
+            GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, tex2d)
+            GLES30.glActiveTexture(GLES30.GL_TEXTURE1)
+            GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, src)
+            GLES30.glUniform1i(GLES30.glGetUniformLocation(rowsProgram, "cur"), 0)
+            GLES30.glUniform1i(GLES30.glGetUniformLocation(rowsProgram, "prev"), 1)
+            GLES30.glUniform1i(GLES30.glGetUniformLocation(rowsProgram, "depthLoc"), depthLoc)
+            GLES30.glUniform2f(GLES30.glGetUniformLocation(rowsProgram, "texel"), 1f / sw, 1f / sh)
+            GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4)
+        }
+
+        attach(dst, stabDepth)
         GLES30.glViewport(0, 0, sw, sh)
         GLES30.glUseProgram(steadyProgram)
         GlUtil.bindQuadAttrib(steadyProgram, quadVbo)
@@ -238,10 +295,14 @@ class VideoTexture(
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, tex2d)
         GLES30.glActiveTexture(GLES30.GL_TEXTURE1)
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, src)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE2)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, if (rows) rowsTex else 0)
         GLES30.glUniform1i(GLES30.glGetUniformLocation(steadyProgram, "cur"), 0)
         GLES30.glUniform1i(GLES30.glGetUniformLocation(steadyProgram, "prev"), 1)
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(steadyProgram, "rows"), 2)
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(steadyProgram, "useRows"), if (rows) 1 else 0)
         GLES30.glUniform1i(GLES30.glGetUniformLocation(steadyProgram, "depthLoc"), depthLoc)
-        GLES30.glUniform1f(GLES30.glGetUniformLocation(steadyProgram, "still"), if (stabFresh) 1f else STILL.getOrElse(level) { 0.25f })
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(steadyProgram, "still"), still)
         GLES30.glUniform1f(GLES30.glGetUniformLocation(steadyProgram, "moving"), if (stabFresh) 1f else MOVING.getOrElse(move) { 0.5f })
         GLES30.glUniform2f(GLES30.glGetUniformLocation(steadyProgram, "texel"), 1f / sw, 1f / sh)
         GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4)
@@ -258,9 +319,7 @@ class VideoTexture(
         GLES30.glGetIntegerv(GLES30.GL_VIEWPORT, vp, 0)
 
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fbo)
-        GLES30.glFramebufferTexture2D(
-            GLES30.GL_FRAMEBUFFER, GLES30.GL_COLOR_ATTACHMENT0, GLES30.GL_TEXTURE_2D, tex2d, 0
-        )
+        attach(tex2d, blitDepth)
         GLES30.glViewport(0, 0, width, height)
         GLES30.glUseProgram(blitProgram)
         GlUtil.bindQuadAttrib(blitProgram, quadVbo)
@@ -274,8 +333,36 @@ class VideoTexture(
         GLES30.glViewport(vp[0], vp[1], vp[2], vp[3])
     }
 
+    /** Draw into [color], and into [depth] too unless it is 0 (the second output of oes_blit.frag / steady.frag). */
+    private fun attach(color: Int, depth: Int) {
+        GLES30.glFramebufferTexture2D(GLES30.GL_FRAMEBUFFER, GLES30.GL_COLOR_ATTACHMENT0, GLES30.GL_TEXTURE_2D, color, 0)
+        GLES30.glFramebufferTexture2D(GLES30.GL_FRAMEBUFFER, GLES30.GL_COLOR_ATTACHMENT1, GLES30.GL_TEXTURE_2D, depth, 0)
+        GLES30.glDrawBuffers(2, if (depth != 0) BOTH else FIRST, 0)
+    }
+
+    private fun newTexture(internal: Int, format: Int, type: Int, w: Int, h: Int, filter: Int): Int {
+        val t = IntArray(1)
+        GLES30.glGenTextures(1, t, 0)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, t[0])
+        GLES30.glTexImage2D(GLES30.GL_TEXTURE_2D, 0, internal, w, h, 0, format, type, null)
+        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MIN_FILTER, filter)
+        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MAG_FILTER, filter)
+        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_S, GLES30.GL_CLAMP_TO_EDGE)
+        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_T, GLES30.GL_CLAMP_TO_EDGE)
+        return t[0]
+    }
+
     fun setPaused(paused: Boolean) { Handler(Looper.getMainLooper()).post { player?.playWhenReady = !paused } }
-    fun setVolume(v: Float) { Handler(Looper.getMainLooper()).post { player?.volume = v } }
+    fun setVolume(v: Float) { Handler(Looper.getMainLooper()).post { player?.let { setSound(it, v) } } }
+
+    /** With the sound off the audio track is not played at all, so nothing decodes it or keeps the audio output awake for silence. */
+    private fun setSound(p: ExoPlayer, v: Float) {
+        val off = v <= 0f
+        val tsp = p.trackSelectionParameters
+        if (tsp.disabledTrackTypes.contains(C.TRACK_TYPE_AUDIO) != off)
+            p.trackSelectionParameters = tsp.buildUpon().setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, off).build()
+        p.volume = v
+    }
     fun seekTo(ms: Long) {
         restartSteady = true
         Handler(Looper.getMainLooper()).post { player?.run { setSeekParameters(SeekParameters.DEFAULT); seekTo(ms) } }
@@ -315,12 +402,66 @@ class VideoTexture(
         if (fbo != 0) GLES30.glDeleteFramebuffers(1, intArrayOf(fbo), 0)
         if (stab[0] != 0) GLES30.glDeleteTextures(2, stab, 0)
         if (steadyProgram != 0) GLES30.glDeleteProgram(steadyProgram)
+        if (rowsProgram != 0) GLES30.glDeleteProgram(rowsProgram)
+        for (t in intArrayOf(blitDepth, stabDepth, rowsTex)) if (t != 0) GLES30.glDeleteTextures(1, intArrayOf(t), 0)
         stab[0] = 0; stab[1] = 0; steadyProgram = 0; outTex = 0; stabW = 0; stabH = 0
+        blitDepth = 0; stabDepth = 0; rowsTex = 0; rowsProgram = 0; rowsOk = false
         if (blitProgram != 0) GLES30.glDeleteProgram(blitProgram)
         if (quadVbo != 0) GLES30.glDeleteBuffers(1, intArrayOf(quadVbo), 0)
         tex2d = 0; oesTex = 0; fbo = 0; blitProgram = 0; quadVbo = 0
     }
 }
+
+/** ExoPlayer's usual renderers, with a video renderer that can skip frames for cool mode. */
+private class CappedRenderers(context: Context, private val maxFps: () -> Int) : DefaultRenderersFactory(context) {
+    override fun buildVideoRenderers(
+        context: Context, extensionRendererMode: Int, mediaCodecSelector: MediaCodecSelector, enableDecoderFallback: Boolean,
+        eventHandler: Handler, eventListener: VideoRendererEventListener, allowedVideoJoiningTimeMs: Long, out: ArrayList<Renderer>,
+    ) {
+        out.add(CappedVideoRenderer(context, getCodecAdapterFactory(), mediaCodecSelector, allowedVideoJoiningTimeMs,
+            enableDecoderFallback, eventHandler, eventListener, maxFps))
+    }
+}
+
+/**
+ * Cool mode shows only about [maxFps] frames a second of a faster video. The decoder still has to
+ * decode every frame, but the ones that would not be shown are let go right away instead of being
+ * passed through the phone's display queue. Frames are kept on a fixed grid of media time, so the
+ * ones shown are evenly spread (every 5th of a 60 fps video at 12, 3 of every 4 at 45).
+ */
+private class CappedVideoRenderer(
+    context: Context, factory: MediaCodecAdapter.Factory, selector: MediaCodecSelector, joiningMs: Long, fallback: Boolean,
+    handler: Handler, listener: VideoRendererEventListener, private val maxFps: () -> Int,
+) : MediaCodecVideoRenderer(context, factory, selector, joiningMs, fallback, handler, listener,
+    DefaultRenderersFactory.MAX_DROPPED_VIDEO_FRAME_COUNT_TO_NOTIFY) {
+
+    private var lastSlot = Long.MIN_VALUE
+
+    override fun onPositionReset(positionUs: Long, joining: Boolean) {
+        lastSlot = Long.MIN_VALUE
+        super.onPositionReset(positionUs, joining)
+    }
+
+    override fun processOutputBuffer(
+        positionUs: Long, elapsedRealtimeUs: Long, codec: MediaCodecAdapter?, buffer: ByteBuffer?, bufferIndex: Int,
+        bufferFlags: Int, sampleCount: Int, bufferPresentationTimeUs: Long, isDecodeOnlyBuffer: Boolean, isLastBuffer: Boolean,
+        format: Format,
+    ): Boolean {
+        val cap = maxFps()
+        if (cap <= 0 || codec == null || isDecodeOnlyBuffer || isLastBuffer)
+            return super.processOutputBuffer(positionUs, elapsedRealtimeUs, codec, buffer, bufferIndex, bufferFlags, sampleCount,
+                bufferPresentationTimeUs, isDecodeOnlyBuffer, isLastBuffer, format)
+        val slot = Math.floorDiv(bufferPresentationTimeUs * cap, 1_000_000L)
+        if (slot == lastSlot) { skipOutputBuffer(codec, bufferIndex, bufferPresentationTimeUs); return true }
+        val done = super.processOutputBuffer(positionUs, elapsedRealtimeUs, codec, buffer, bufferIndex, bufferFlags, sampleCount,
+            bufferPresentationTimeUs, isDecodeOnlyBuffer, isLastBuffer, format)
+        if (done) lastSlot = slot
+        return done
+    }
+}
+
+private val BOTH = intArrayOf(GLES30.GL_COLOR_ATTACHMENT0, GLES30.GL_COLOR_ATTACHMENT1)
+private val FIRST = intArrayOf(GLES30.GL_COLOR_ATTACHMENT0, GLES30.GL_NONE)
 
 // Share of the new depth a spot takes per frame for each steady level: off, normal/light, strong.
 private val STILL = floatArrayOf(1f, 0.25f, 0.1f)
