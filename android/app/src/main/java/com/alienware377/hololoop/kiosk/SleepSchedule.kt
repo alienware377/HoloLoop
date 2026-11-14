@@ -78,10 +78,10 @@ object SleepSchedule {
     // manual override
     private var override: Pair<Boolean, Long?>? = null
 
+    // An override that has run out is skipped, not cleared: the "sleeping until" text asks
+    // about later times too, and clearing it then ended a manual sleep a second after it began.
     fun asleep(s: Settings, now: Long = System.currentTimeMillis()): Boolean {
-        override?.let { (v, until) ->
-            if (until != null && now >= until) override = null else return v
-        }
+        override?.let { (v, until) -> if (until == null || now < until) return v }
         val c = Calendar.getInstance().apply { timeInMillis = now }
         return scheduledAsleep(s, c)
     }
