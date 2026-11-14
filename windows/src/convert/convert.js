@@ -140,11 +140,17 @@ async function convert(job, hooks = {}) {
   try { state = JSON.parse(fs.readFileSync(stateFile, 'utf8')); } catch {}
   // identify the source by name + size, not by folder, so moving it keeps finished pieces
   let size = 0; try { size = fs.statSync(job.src).size; } catch {}
-  // with phone copies on, the 3D copy is made at the phone's bitrate in one go (no big copy, no second encode)
-  const small = s.mbps > 0;
-  const sig = { v: VERSION, pieces: 3, file: path.basename(job.src).toLowerCase(), size, geo, msz, model: s.model, chunkSec: s.chunkSec, rate: info.rate,
-    enc: small ? 'small' + s.mbps : 'full' };
+  const sig = { v: VERSION, pieces: 3, file: path.basename(job.src).toLowerCase(), size, geo, msz, model: s.model, chunkSec: s.chunkSec, rate: info.rate };
   if (JSON.stringify(state.sig) !== JSON.stringify(sig)) state = { sig, done: [] };   // settings changed: start over
+  // With phone copies on (s.mbps > 0) and a hardware HEVC encoder, the 3D copy is made at the
+  // phone's bitrate in one go: no big copy, no second encode. The choice is kept per job, so a
+  // phone setting changed while it is paused can't mix pieces, and pieces made before this
+  // choice existed stay full size.
+  if (state.mbps === undefined) {
+    state.mbps = 0;
+    if (!state.done.length && s.mbps > 0 && (await pickSmallEncoder()).name !== 'libx265') state.mbps = s.mbps;
+  }
+  const small = state.mbps > 0;
   const save = () => fs.writeFileSync(stateFile, JSON.stringify(state));
   save();
 
@@ -161,7 +167,7 @@ async function convert(job, hooks = {}) {
     if (!backend.startsWith('dml')) break;                       // CPU fallback: one is plenty
   }
   const picked = small ? await pickSmallEncoder() : await pickEncoder();
-  const enc = { name: picked.name, args: small ? picked.args(s.mbps) : picked.args, hevc: /hevc|265/.test(picked.name) };
+  const enc = { name: picked.name, args: small ? picked.args(state.mbps) : picked.args, hevc: /hevc|265/.test(picked.name) };
   let nChunks = Math.ceil(info.duration / s.chunkSec);
   const t0 = Date.now(); let doneSec = state.done.length * s.chunkSec, sessionSec = 0;
   const report = (stage, posSec) => {
@@ -216,7 +222,7 @@ async function convert(job, hooks = {}) {
   await run(FFMPEG, args);
   fs.renameSync(tmpOut, job.outFile);
   const meta = { kind: 'rgbd', depthLoc: 2, version: VERSION, width: geo.CW * 2, height: geo.CH, colorW: geo.CW, colorH: geo.CH,
-    depthW: msz.W, depthH: msz.H, model: s.model, fps: info.fps, duration: Math.min(info.duration, nChunks * s.chunkSec), src: job.src, backend, encoder: enc.name, mbps: small ? s.mbps : null, made: new Date().toISOString() };
+    depthW: msz.W, depthH: msz.H, model: s.model, fps: info.fps, duration: Math.min(info.duration, nChunks * s.chunkSec), src: job.src, backend, encoder: enc.name, mbps: small ? state.mbps : null, made: new Date().toISOString() };
   fs.writeFileSync(job.outFile + '.json', JSON.stringify(meta, null, 2));
   fs.rmSync(job.workDir, { recursive: true, force: true });
   report('done', info.duration);

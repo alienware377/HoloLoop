@@ -330,11 +330,18 @@ function phoneCopyCard() {
        <p class="muted">${pct}%${pc.speed ? ` · ${pc.speed.toFixed(1)}x real time` : ''}${pc.eta ? ' · ' + fmtEta(pc.eta) : ''}</p>` : '';
   const items = S.items || [];
   const ready = items.filter((i) => i.phone?.state === 'ready').length, todo = items.filter((i) => i.phone && i.phone.state !== 'ready').length;
+  // pc.onePass: this PC makes new 3D copies at the phone's size straight away (it can play HEVC)
+  const tip = pc.onePass
+    ? `Makes a lighter copy of each 3D video for the phone, so more fit on it. Videos converted while this is on are made at this size straight away, so this PC plays the lighter copy too. Videos converted before keep their full-size copy here, and their 3D and framing don't have to be made again.`
+    : `Makes a lighter copy of each 3D video for the phone, so more fit on it. The full-size 3D copies on this PC stay as they are, and the 3D and framing don't have to be made again.`;
+  const hint = pc.onePass ? 'New videos are made small straight away. Older ones get a small copy, and the phone swaps to it once it is made'
+    : 'The phone swaps each big video for its small copy once it is made';
   return `<div class="card"><h2>Smaller copies for the phone</h2>
-      <p class="tip" style="margin:4px 0 10px">Makes a lighter copy of each 3D video for the phone, so more fit on it. The full-size 3D copies on this PC stay as they are, and the 3D and framing don't have to be made again.</p>
-      ${sw('phone.compress', 'Send smaller copies to the phone', 'New videos are made small straight away. Older ones get a small copy, and the phone swaps to it once it is made')}
+      <p class="tip" style="margin:4px 0 10px">${tip}</p>
+      ${sw('phone.compress', 'Send smaller copies to the phone', hint)}
       ${p.compress ? `<div style="margin-top:12px">${range('phone.mbps', 'Quality', 2, 16, 0.5, (v) => `${v} Mbit/s · about ${(v * 0.45).toFixed(1)} GB per hour · ${v < 4 ? 'small, softer picture' : v < 8 ? 'good' : v < 12 ? 'very good' : 'close to the original'}`)}</div>
       <p class="muted" data-est style="margin:4px 0 0">${estText(p.mbps)}</p>
+      ${pc.onePass ? '<p class="muted" style="margin:4px 0 0">Videos already made small keep the quality they were made at.</p>' : ''}
       <p class="muted" style="margin:4px 0 0">${ready} made${todo ? `, ${todo} still to make` : ''}.</p>${busy}` : ''}
     </div>`;
 }

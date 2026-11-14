@@ -67,7 +67,7 @@ function state(req) {
     now: hub.playback.state(),
     items: L.items.map(itemView), folders: L.folders,
     convert: hub.converter.status(),
-    phoneCopy: hub.phonecopy ? { ...hub.phonecopy.status(), sizes: hub.phonecopy.sizes() } : null,
+    phoneCopy: hub.phonecopy ? { ...hub.phonecopy.status(), sizes: hub.phonecopy.sizes(), onePass: hub.converter.onePass() } : null,
     sleep: hub.schedule.describe(),
     go: hub.getGo(),
     calibration: cal ? { serial: cal.raw.serial, live: cal.live, source: cal.source } : null,

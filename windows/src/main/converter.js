@@ -7,6 +7,8 @@ const { utilityProcess } = require('electron');
 const config = require('./config');
 const library = require('./library');
 const log = require('./log');
+const hevc = require('./hevc');
+const { pickSmallEncoder } = require('../convert/media');
 
 let worker = null, workerReady = false, current = null, idleTimer = null;
 const FRAMING_V = 5;           // bump when framing rules change, so videos get re-checked
@@ -14,6 +16,15 @@ let allowed = () => true;            // set by main: sleep/when policy
 const listeners = new Set();
 let lastStatus = { state: 'idle' };
 function emit(s) { lastStatus = s; for (const l of listeners) { try { l(s); } catch {} } }
+
+// With phone copies on, 3D copies are made at the phone's size in one go, but only when this
+// PC can play HEVC and has a graphics card encoder for it. null = not checked yet.
+let onePass = null;
+async function checkOnePass() {
+  const [plays, enc] = await Promise.all([hevc.ask(), pickSmallEncoder().catch(() => null)]);
+  onePass = !!plays && !!enc && enc.name !== 'libx265';
+  log.info(`3D copies at the phone's size in one go: ${onePass ? 'possible' : 'not on this PC'}`);
+}
 
 function ensureWorker() {
   if (worker) return;
@@ -201,6 +212,8 @@ function tick() {
     setTimeout(tick, 50);
     return;
   }
+  const phone = config.get().phone || {};
+  if (phone.compress && onePass === null) return;      // the check above runs once at start
   clearTimeout(idleTimer); idleTimer = null;
   ensureWorker();
   if (!workerReady) return;
@@ -211,7 +224,7 @@ function tick() {
   worker.postMessage({ type: 'job', job: {
     id: it.id, src: it.path, still: !!it.still, outFile, workDir: outFile + '.work',
     settings: { maxLong: c.maxLong, depthLong: library.QUALITY[it.quality] || c.depthLong, model: library.DEPTH_MODELS[it.model] ? it.model : (library.DEPTH_MODELS[c.depthModel] ? c.depthModel : 'standard'),
-      backend: c.backend, chunkSec: 60, mbps: config.get().phone?.compress ? config.get().phone.mbps : 0 },
+      backend: c.backend, chunkSec: 60, mbps: phone.compress && onePass ? phone.mbps : 0 },
   } });
 }
 
@@ -228,7 +241,8 @@ function start(allowFn) {
   library.onChange(() => setTimeout(current ? tickFrame : tick, 100));
   config.onChange(() => tick());
   setInterval(tick, 15000);
+  checkOnePass().catch(() => { onePass = false; }).finally(() => tick());
   tick();
 }
 
-module.exports = { start, tick, cancel, retry, setQuality, setModel, status: () => lastStatus, onStatus: (f) => { listeners.add(f); return () => listeners.delete(f); } };
+module.exports = { start, tick, cancel, retry, setQuality, setModel, onePass: () => !!onePass, status: () => lastStatus, onStatus: (f) => { listeners.add(f); return () => listeners.delete(f); } };
