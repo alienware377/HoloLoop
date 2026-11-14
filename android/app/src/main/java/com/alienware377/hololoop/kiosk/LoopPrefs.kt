@@ -30,7 +30,7 @@ class LoopPrefs(context: Context) {
     var autoStart: Boolean
         get() = p.getBoolean("autoStart", false)
         set(v) = p.edit().putBoolean("autoStart", v).apply()
-    /** Cool mode: draw the Go only [coolFps] times a second instead of 60, so the phone runs cooler. */
+    /** Cool mode: show at most [coolFps] video frames a second, so the phone runs cooler. */
     var coolMode: Boolean
         get() = p.getBoolean("coolMode", false)
         set(v) = p.edit().putBoolean("coolMode", v).apply()

@@ -132,10 +132,12 @@ class LenticularRenderer(private val context: Context) : GLSurfaceView.Renderer 
             return
         }
         val lk = look
+        val fxs = if (item.isRgbd) fx?.takeIf { it.active.isNotEmpty() } else null
         (tex as? VideoTexture)?.let {
             it.steady = if (item.isRgbd) (lk?.steady ?: 0) else 0
             it.steadyMove = if (item.isRgbd) (lk?.steadyMove ?: 0) else 0
             it.depthLoc = item.depthLoc
+            it.wantDepth = item.isRgbd && fxs == null
         }
         val fresh = tex.update()          // new frame first, so ensure() hands back the newest (steadied) picture
         val texId = tex.ensure()
@@ -149,7 +151,6 @@ class LenticularRenderer(private val context: Context) : GLSurfaceView.Renderer 
             fpsSince = now; frames = 0; passes = 0
         }
 
-        val fxs = if (item.isRgbd) fx?.takeIf { it.active.isNotEmpty() } else null
         val moving = fxs?.animated == true
         if (moving) lastAnimNs = now
         if (moving != animating) { animating = moving; if (moving) onAnimating?.invoke() }

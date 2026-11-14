@@ -838,7 +838,7 @@ class LoopActivity : AppCompatActivity(), PlaybackEvents, GoMenu.Host, FxPanel.H
         val coolBtn = findViewById<MaterialButton>(R.id.coolBtn)
         val coolFps = findViewById<Slider>(R.id.coolFpsSlider)
         fun showCool() {
-            coolBtn.text = if (prefs.coolMode) "Cool mode: on (${prefs.coolFps} frames a second, runs cooler)" else "Cool mode: off (60 frames a second)"
+            coolBtn.text = if (prefs.coolMode) "Cool mode: on (up to ${prefs.coolFps} frames a second, runs cooler)" else "Cool mode: off (every video frame)"
             coolFps.value = prefs.coolFps.toFloat()
             coolFps.visibility = if (prefs.coolMode) View.VISIBLE else View.GONE
         }

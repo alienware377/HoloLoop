@@ -57,6 +57,9 @@ class VideoTexture(
     @Volatile var steadyMove = 0
     private val steadyOn get() = steady > 0 || steadyMove > 0
     @Volatile var depthLoc = 2
+    /** Whether the 3D shader will read [depthTex] (set by the renderer each frame): not for quilts,
+     *  nor while filters are on, since they move the depth and it is read from their picture. */
+    @Volatile var wantDepth = true
     private val stab = IntArray(2)        // ping-pong: the steadied frames
     private var stabI = 0
     private var stabFresh = true
@@ -75,7 +78,9 @@ class VideoTexture(
     private var rowsProgram = 0
     private var rowsOk = false
     private var blitDepthFresh = false    // blitDepth holds the current frame (it is skipped while steady makes its own)
-    override val depthTex: Int get() = if (steadyOn && outTex != 0 && outTex != tex2d) stabDepth else if (blitDepthFresh) blitDepth else 0
+    private var stabDepthFresh = false    // stabDepth holds the current steadied frame
+    override val depthTex: Int get() = if (steadyOn && outTex != 0 && outTex != tex2d) (if (stabDepthFresh) stabDepth else 0)
+        else if (blitDepthFresh) blitDepth else 0
     @Volatile private var restartSteady = false
     private val stMatrix = FloatArray(16)
     @Volatile private var frameAvailable = false
@@ -131,8 +136,6 @@ class VideoTexture(
         GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MAG_FILTER, GLES30.GL_LINEAR)
         GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_S, GLES30.GL_CLAMP_TO_EDGE)
         GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_T, GLES30.GL_CLAMP_TO_EDGE)
-
-        blitDepth = newTexture(GLES30.GL_R8, GLES30.GL_RED, GLES30.GL_UNSIGNED_BYTE, width, height, GLES30.GL_LINEAR)
 
         val f = IntArray(1)
         GLES30.glGenFramebuffers(1, f, 0)
@@ -222,13 +225,14 @@ class VideoTexture(
         st.getTransformMatrix(stMatrix)
         val level = steady
         val move = steadyMove
-        blitToTex2d(withDepth = level <= 0 && move <= 0)
-        steadyPass(level, move)
+        val depth = wantDepth
+        blitToTex2d(withDepth = depth && level <= 0 && move <= 0)
+        steadyPass(level, move, depth)
         return true
     }
 
     /** Smooth the depth between frames, more where the picture is still (see steady.frag). */
-    private fun steadyPass(level: Int, move: Int) {
+    private fun steadyPass(level: Int, move: Int, depth: Boolean) {
         if (level <= 0 && move <= 0) { outTex = tex2d; stabFresh = true; return }
         if (restartSteady) { restartSteady = false; stabFresh = true }
         val t = mediaTimeSec()
@@ -288,7 +292,8 @@ class VideoTexture(
             GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4)
         }
 
-        attach(dst, stabDepth)
+        attach(dst, if (depth) stabDepth else 0)
+        stabDepthFresh = depth
         GLES30.glViewport(0, 0, sw, sh)
         GLES30.glUseProgram(steadyProgram)
         GlUtil.bindQuadAttrib(steadyProgram, quadVbo)
@@ -319,6 +324,7 @@ class VideoTexture(
         val vp = IntArray(4)
         GLES30.glGetIntegerv(GLES30.GL_VIEWPORT, vp, 0)
 
+        if (withDepth && blitDepth == 0) blitDepth = newTexture(GLES30.GL_R8, GLES30.GL_RED, GLES30.GL_UNSIGNED_BYTE, width, height, GLES30.GL_LINEAR)
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fbo)
         attach(tex2d, if (withDepth) blitDepth else 0)
         blitDepthFresh = withDepth
@@ -456,7 +462,7 @@ private class CappedVideoRenderer(
         if (cap <= 0 || codec == null || isDecodeOnlyBuffer || isLastBuffer)
             return super.processOutputBuffer(positionUs, elapsedRealtimeUs, codec, buffer, bufferIndex, bufferFlags, sampleCount,
                 bufferPresentationTimeUs, isDecodeOnlyBuffer, isLastBuffer, format)
-        val slot = Math.floorDiv(bufferPresentationTimeUs * cap, 1_000_000L)
+        val slot = coolSlot(bufferPresentationTimeUs, cap)
         if (slot == lastSlot) { skipOutputBuffer(codec, bufferIndex, bufferPresentationTimeUs); return true }
         val done = super.processOutputBuffer(positionUs, elapsedRealtimeUs, codec, buffer, bufferIndex, bufferFlags, sampleCount,
             bufferPresentationTimeUs, isDecodeOnlyBuffer, isLastBuffer, format)
@@ -464,6 +470,14 @@ private class CappedVideoRenderer(
         return done
     }
 }
+
+/**
+ * Which 1/[cap] s slot a frame at [timeUs] falls in; cool mode shows one frame per slot.
+ * Media3 rounds frame times down to whole microseconds (a 30 fps frame lands at 33333, not
+ * 33333.3), so without the 1 ms nudge a frame just short of a boundary would share the slot
+ * before it and a 30 fps video at a cap of 30 would lose every third frame.
+ */
+internal fun coolSlot(timeUs: Long, cap: Int): Long = Math.floorDiv((timeUs + 1_000L) * cap, 1_000_000L)
 
 private val BOTH = intArrayOf(GLES30.GL_COLOR_ATTACHMENT0, GLES30.GL_COLOR_ATTACHMENT1)
 private val FIRST = intArrayOf(GLES30.GL_COLOR_ATTACHMENT0, GLES30.GL_NONE)

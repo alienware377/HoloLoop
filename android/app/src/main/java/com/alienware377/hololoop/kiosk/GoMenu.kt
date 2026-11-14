@@ -35,7 +35,7 @@ class GoMenu(context: Context, private val host: Host) : View(context) {
         var lensAlign: Int
         var lensBoost: Int
         var lensFlip: Boolean
-        /** Cool mode: on or off, and how many times a second it draws the Go (12..45). */
+        /** Cool mode: on or off, and the most video frames a second it shows (12..45). */
         var coolMode: Boolean
         var coolFps: Int
         var shuffle: Boolean
@@ -102,7 +102,7 @@ class GoMenu(context: Context, private val host: Host) : View(context) {
     private fun mainPage() = Page("Menu") {
         listOf(PageRow("3D settings", { if (host.ownLook) "this phone's" else "from the PC" }, null) { lookPage() },
             PageRow("Filters", { if (host.fx.on) "On" else "Off" }, null) { filtersPage() },
-            PageRow("Cool mode", { if (host.coolMode) "${host.coolFps} fps" else "Off" }, "Draws the Go fewer times a second, so the phone runs cooler.") { coolPage() },
+            PageRow("Cool mode", { if (host.coolMode) "${host.coolFps} fps" else "Off" }, "Shows fewer video frames a second, so the phone runs cooler.") { coolPage() },
             PageRow("Playback", { if (host.shuffle) "Shuffle" else "In order" }, null) { playbackPage() },
             PageRow("Lens", { if (host.lensAlign == 0 && host.lensBoost == 100 && !host.lensFlip) "Off" else "On" }, "For a magnifying lens in front of the Go.") { lensPage() },
             ValueRow("Menu see-through", "How much of the 3D shows through behind this menu.",
@@ -113,9 +113,9 @@ class GoMenu(context: Context, private val host: Host) : View(context) {
 
     private fun coolPage() = Page("Cool mode") {
         listOf<Row>(
-            choiceRow("Cool mode", "Draws the Go fewer times a second, so the phone runs cooler. Faster videos skip frames.",
+            choiceRow("Cool mode", "Shows fewer video frames a second, so the phone runs cooler. Only videos faster than this skip frames.",
                 listOf("Off", "On"), { if (host.coolMode) 1 else 0 }, { host.coolMode = it == 1 }),
-            ValueRow("Frames a second", "Lower runs cooler, higher moves smoother. Off draws 60.",
+            ValueRow("Frames a second", "Lower runs cooler, higher moves smoother. Off shows every frame of the video.",
                 Adjust(12, 45, false, { host.coolFps }, { host.coolFps = it; host.coolMode = true }, { "$it fps" }, step = 1)),
         ) + endRows()
     }
