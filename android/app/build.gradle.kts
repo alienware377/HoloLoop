@@ -21,8 +21,8 @@ android {
         applicationId = "com.alienware377.hololoop"
         minSdk = 26
         targetSdk = 36
-        versionCode = 6
-        versionName = "1.0.5"
+        versionCode = 7
+        versionName = "1.0.6"
         // shown in HoloLoop's screen so a stale install is obvious
         buildConfigField("String", "BUILD_STAMP", "\"" + String.format("%tF %<tR", System.currentTimeMillis()) + "\"")
     }
