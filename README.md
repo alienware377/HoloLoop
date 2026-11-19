@@ -22,6 +22,8 @@ Not made by or affiliated with Looking Glass Factory.
 
 The Go's own buttons work: back and next change video (hold to skip through it), play pauses. Press play twice quickly for a menu on the Go itself: 3D settings, filters, cool mode, playback, lens correction and sleep. Most of it is on the phone too.
 
+At sleep time the phone switches the Go's screen fully off, backlight included, and turns it back on when it wakes (the option is under *Sleep* on the phone; Android asks once for access to the Go). While the screen is off only the Go's power button works: pressing it wakes HoloLoop early.
+
 ## Building
 
 **Phone app** (`android/`): Android Studio, or `gradlew assembleDebug`. A release build is signed when `android/keystore.properties` exists (`storeFile`, `storePassword`, `keyAlias`, `keyPassword`).

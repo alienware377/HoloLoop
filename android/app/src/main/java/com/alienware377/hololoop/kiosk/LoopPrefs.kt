@@ -27,6 +27,10 @@ class LoopPrefs(context: Context) {
     var useLocalLook: Boolean
         get() = p.getBoolean("useLocalLook", false)
         set(v) = p.edit().putBoolean("useLocalLook", v).apply()
+    /** While asleep, switch the Go's screen and backlight fully off (not just black). */
+    var sleepScreenOff: Boolean
+        get() = p.getBoolean("sleepScreenOff", true)
+        set(v) = p.edit().putBoolean("sleepScreenOff", v).apply()
     var autoStart: Boolean
         get() = p.getBoolean("autoStart", false)
         set(v) = p.edit().putBoolean("autoStart", v).apply()

@@ -658,6 +658,13 @@
                     android:layout_height="wrap_content"
                     android:layout_marginTop="6dp" />
 
+                <com.google.android.material.materialswitch.MaterialSwitch
+                    android:id="@+id/sleepScreenOffSwitch"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp"
+                    android:text="@string/loop_sleep_screen_off" />
+
                 <TextView
                     android:id="@+id/sleepStatus"
                     android:layout_width="match_parent"

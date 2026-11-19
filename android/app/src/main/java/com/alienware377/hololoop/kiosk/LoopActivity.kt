@@ -80,6 +80,10 @@ class LoopActivity : AppCompatActivity(), PlaybackEvents, GoMenu.Host, FxPanel.H
     private val errors = HashMap<String, Int>()
     private val history = ArrayDeque<String>()      // keys in the order they played (for shuffle and Back)
     private var stillRunnable: Runnable? = null
+    private lateinit var goPower: GoPower
+    /** The Go's screen was seen switched off during this sleep (so finding it on means its button was pressed). */
+    private var goScreenOff = false
+    private var goPowerPollAt = 0L
 
     private var refreshLookUi: () -> Unit = {}     // set in bindViews: redraws the 3D look controls
     private var lookEditor: ((com.alienware377.hololoop.model.Look) -> com.alienware377.hololoop.model.Look) -> Unit = {}
@@ -133,6 +137,8 @@ class LoopActivity : AppCompatActivity(), PlaybackEvents, GoMenu.Host, FxPanel.H
         items = LoopItem.listFrom(prefs.playlistJson).filter { pc.isReady(it) }
         bindViews()
         root = findViewById<View>(R.id.root).apply { isFocusableInTouchMode = true; defaultFocusHighlightEnabled = false; requestFocus() }
+        goPower = GoPower(this).also { it.onAccess = { ok -> if (ok) syncGoScreen(); render() } }
+        asleep = SleepSchedule.asleep(prefs.sleep)
         displayListener = ExternalDisplays.registerListener(this) { main.post { refreshPresentation() } }
         refreshPresentation()
         startMediaSession()
@@ -192,6 +198,7 @@ class LoopActivity : AppCompatActivity(), PlaybackEvents, GoMenu.Host, FxPanel.H
         main.removeCallbacksAndMessages(null)
         runCatching { unregisterReceiver(driveReceiver) }
         mediaSession?.release(); mediaSession = null
+        goPower.release()
         displayListener?.let { ExternalDisplays.manager(this).unregisterDisplayListener(it) }
         presentation?.dismiss(); presentation = null
         super.onDestroy()
@@ -451,6 +458,10 @@ class LoopActivity : AppCompatActivity(), PlaybackEvents, GoMenu.Host, FxPanel.H
         override fun run() {
             val sl = SleepSchedule.asleep(prefs.sleep)
             if (sl != asleep) setAsleep(sl)
+            if (asleep && goScreenOff && SystemClock.elapsedRealtime() > goPowerPollAt) {
+                goPowerPollAt = SystemClock.elapsedRealtime() + 15_000
+                goPower.get { on -> if (on == true && asleep && goScreenOff) { Log.i(TAG, "Go switched on with its button"); wakeNow(); render() } }
+            }
             if (System.currentTimeMillis() - lastTouch > 25_000 && blackout.visibility != View.VISIBLE) showPanel(false)
             if (!syncing && System.currentTimeMillis() - lastSyncAt > 10 * 60_000) syncNow()
             if (!playing && !asleep && presentation != null && items.isNotEmpty()) playNext()
@@ -485,6 +496,7 @@ class LoopActivity : AppCompatActivity(), PlaybackEvents, GoMenu.Host, FxPanel.H
         }
         playing = false
         Log.i(TAG, "Go display ${display.displayId} ${display.name}")
+        if (prefs.sleepScreenOff) { goPower.askAccess(); syncGoScreen() }
     }
 
     // ------------------------------------------------------------------ playback
@@ -562,9 +574,22 @@ class LoopActivity : AppCompatActivity(), PlaybackEvents, GoMenu.Host, FxPanel.H
         play(items[(idx - 1).mod(items.size)])
     }
 
+    /**
+     * Puts the Go's screen in the state that fits: off while asleep (when that option is on),
+     * otherwise on. It also turns the screen back on after a restart that happened mid-sleep.
+     */
+    private fun syncGoScreen() {
+        if (!::goPower.isInitialized || !goPower.present) return
+        val off = asleep && prefs.sleepScreenOff
+        goPowerPollAt = SystemClock.elapsedRealtime() + 15_000
+        goPower.set(!off) { state -> goScreenOff = off && state == false }
+    }
+
     private fun setAsleep(v: Boolean) {
         asleep = v
         Log.i(TAG, if (v) "sleep" else "wake")
+        if (!v) goScreenOff = false
+        syncGoScreen()
         if (v) { stillRunnable?.let { main.removeCallbacks(it) }; playing = false; presentation?.updateItem(null) }
         else {
             val cur = current?.let { c -> items.firstOrNull { it.key == c.key } }
@@ -966,6 +991,16 @@ class LoopActivity : AppCompatActivity(), PlaybackEvents, GoMenu.Host, FxPanel.H
         }
         show()
         sw.setOnCheckedChangeListener { b, on -> if (b.isPressed) save(win(), on) }
+        findViewById<MaterialSwitch>(R.id.sleepScreenOffSwitch).apply {
+            isChecked = prefs.sleepScreenOff
+            setOnCheckedChangeListener { b, on ->
+                if (!b.isPressed) return@setOnCheckedChangeListener
+                prefs.sleepScreenOff = on
+                if (on) goPower.askAccess()
+                if (!on) goScreenOff = false
+                syncGoScreen(); render()
+            }
+        }
         from.setOnClickListener {
             val w = win()
             TimePickerDialog(this, { _, h, m -> save(w.copy(fromMin = h * 60 + m)); show() }, w.fromMin / 60, w.fromMin % 60, true).show()
@@ -1122,6 +1157,8 @@ class LoopActivity : AppCompatActivity(), PlaybackEvents, GoMenu.Host, FxPanel.H
             asleep && !SleepSchedule.scheduledAsleep(s) -> "Asleep now (you pressed Sleep now)."
             asleep -> "Asleep now (scheduled)."
             !s.enabled -> "Off: plays all day and night."
+            prefs.sleepScreenOff && goPower.present && !goPower.hasAccess ->
+                "Awake now. To switch the Go's screen fully off at night, allow HoloLoop to use the Looking Glass Go when Android asks."
             SleepSchedule.scheduledAsleep(s) -> "Awake now (you pressed Wake up)."
             else -> "Awake now."
         }

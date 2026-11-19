@@ -28,6 +28,7 @@
     <string name="loop_test_pattern">Show the view-number test</string>
     <string name="loop_sleep">Sleep</string>
     <string name="loop_sleep_switch">Go black at night</string>
+    <string name="loop_sleep_screen_off">Turn the Go\'s screen fully off while asleep</string>
     <string name="loop_this_phone">This phone</string>
     <string name="loop_autostart">Start HoloLoop when the phone turns on</string>
     <string name="loop_phone_tip">Tip: keep the phone charging through the hub, and turn on Battery protection (Settings, Battery, More battery settings) so it stops at 80-85%.</string>
